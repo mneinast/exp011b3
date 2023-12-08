@@ -1,0 +1,976 @@
+---
+title: "Mouse O18 Analysis"
+author: "Edward Cruz" "Michael Neinast"
+date: "2023-11-28"
+output: html_document
+---
+
+# Allosaurus
+Run the following for a sample:
+> Sequest, LDA, Reporter Quant, TMTproC Deconvolution,
+  ProteinSieve, ProteinAssembler
+> Skip ProteinQuant
+
+Excessive lines in output file are a bug from Allosaurus,
+  so remove "<>" lines using:
+
+```
+
+sed '/</d' file.csv > new_file.csv
+
+```
+
+# Functions
+
+```{r Importing Libraries}
+
+rm(list=ls(all=T))
+
+library(readr)
+
+library(reshape2) #melt fn
+library(ggplot2)
+library(dplyr)
+library(readxl)
+library(patchwork) # Combine ggplots
+library(stringr)
+library(data.table)
+library(minpack.lm)
+library(deSolve)
+library(Biostrings)
+library(tidyverse)
+library(splines)
+library(tictoc)
+
+```
+
+
+General Filters to import TMTc proteomics datasets
+
+```{r Reading raw files and filtering}
+
+filter_raw <- function(csv.file, no.channels) {
+  
+  #Setting ratios columns needed based on channels  
+  ratios <- sapply(seq(1, no.channels), function(x) {paste("ratios", x, sep="")})
+  
+  #Selecting columns needed for filtering and data analysis
+  raw.columns <- c('Protein ID', 'Parsimony', 'Peptide', 'tmtcplus_sum_sn',
+                   ratios, 'Theo m/z', 'z', 'Isolation m/z', 'passed_ppm_filter')
+
+  cat("Reading",  tail(unlist(strsplit(csv.file, "/")), n = 1), "...\n\n")  
+    
+  data.df <- fread(input = csv.file, select = raw.columns) %>%
+    as.data.frame
+  
+  cat("Initial rows:", nrow(data.df), "\n")
+  
+    #'*Parsimony, REV sequences, contaminants, and oxM*
+  data.df <- data.df[data.df$Parsimony %in% c("R", "U"),] #Drop NA Parsimony
+  data.df <- data.df[!grepl("#", data.df$`Protein ID`),] #Remove reverse sequences
+  data.df <- data.df[!grepl('contaminant', data.df$`Protein ID`),] #Remove contaminants
+  data.df <- data.df[!grepl("\\*", data.df$Peptide),] #Remove oxidized methionines
+  
+  cat("After Initial Parsimony/REV/Contam/oxM Filter:", nrow(data.df), "\n")
+
+  #'*M0 Filter*  
+  #Calculate theoretical/observed masses + "error"
+  # ... Then select rows within error range
+  data.df <- data.df[((data.df['z']*data.df['Isolation m/z']) >
+                        ((data.df['z']*data.df['Theo m/z']) - 0.1)) &
+                       ((data.df['z']*data.df['Isolation m/z']) <
+                          ((data.df['z']*data.df['Theo m/z']) + 0.1)), ]
+  
+  cat("After M0 Filter:", nrow(data.df), "\n")  
+
+  #'*TMTproC Signal*
+  #Total Sn > 40 required for peptides
+  data.df <- data.df[data.df$tmtcplus_sum_sn > 40,]
+  #Max signal within peptide group
+  data.df <- data.df %>% group_by(Peptide) %>% #Group by Peptide
+    filter(tmtcplus_sum_sn == max(tmtcplus_sum_sn)) %>% # ... Select row with max signal
+    ungroup
+
+  cat("After TMTproC Signal Filter:", nrow(data.df), "\n")
+  
+  #'*Missed Cleavages*
+  #Strip peptides of surrounding AAs
+  data.df['Peptide'] <- sapply(strsplit(data.df$Peptide, "\\."), `[`, 2)
+  #Remove peptides with missed cleavages
+  # ... Contains KR after removing last AA
+  data.df <- data.df[!(grepl("K", str_sub(data.df$Peptide, end=-2))),]
+  data.df <- data.df[!(grepl("R", str_sub(data.df$Peptide, end=-2))),]  
+  cat("After removing Missed Cleavages:", nrow(data.df), "\n\n\n")
+
+  #Removing unnecessary columns and renaming data
+  data.df[c("Parsimony", "sum_ratio",
+            "Theo m/z", "z", "Isolation m/z")] <- NULL
+  
+  return(data.df) }
+
+
+#For measuring total protein signal from complement ions
+sn_filter <- function(protein_id, df) {
+
+  pep.data <- df[df$Protein_ID == protein_id,]
+  protein.signal <- sum(pep.data$TMTc_sn)
+
+  return(protein.signal) }
+
+
+```
+
+"XLA-O18_Normalization_v2.xlsx" was generated with the script "XLA_Normalization.Rmd"
+- Kmeans clustered raw results of membrane proteins then selected clusters most likely to be stable.
+- Filtered out proteins which appeared in other clusters
+- Repeated this process once more with resulting proteins
+- Final protein list was exported to normalization file
+
+```{r XLA Normalization}
+
+norm_XLA <- function(df) {
+  norm.proteins <- read_excel("Files/Normalization/XLA-O18_Normalization_V2.xlsx")
+  norm.proteins <- norm.proteins$Protein_ID
+  
+  #Subsetting proteins for normalization
+  norm.matrix <- df[df$Protein_ID %in% norm.proteins,]
+  #Setting error - Ratios should be 1:1 (1/No. channels)
+  error <- apply(norm.matrix[3:length(norm.matrix)], 2, median)
+
+  #Divide each original ratio by the pipet error
+  # ... Divide each column by the row sum
+  ratio.df <- as.matrix(df[3:length(df)])
+  corr.ratios <- sweep(ratio.df, 2, error, `/`)
+  corr.ratios <- sweep(corr.ratios, 1, rowSums(corr.ratios), `/`)
+  
+  #Normalized dataframe then shifting to 1 -> (1/7 Ratio) = 1
+  norm.df <- df
+  norm.df[3:length(df)] <- corr.ratios
+  norm.df[3:length(df)] <- norm.df[3:length(df)] / (1/(length(df) - 2))
+  
+  cat("Expected: ", 1/(length(df) - 2), '\n\n')
+  print(error)
+  
+  return(as.data.frame(norm.df)) }
+
+```
+
+
+```{r Files needed for remaining script }
+
+#These are concentrations in the egg - for the sake of being correct, in the future
+#   it will be better if we collect new absolute data at the 2-cell stage
+XLA_Conc.df <- read_excel("XenopusProteinConcentrationEstimates.xlsx")
+XLA_Conc.df <- XLA_Conc.df %>% select(`Protein ID-Laevis v10p1`,
+                                      `Estimated Protein Concentration (nM)`) %>%
+  as.data.frame
+colnames(XLA_Conc.df) <- c("Protein_ID", "Conc_nM") #Renaming for merge
+
+#Xenopus gene names
+XLA.genes <- read_excel('Xen10_to_Human_Name_Assign.xlsx')
+XLA.genes <- XLA.genes[c("Protein_ID", "Human_Gene")] #, "Description")]
+
+```
+
+
+
+# Xenopus O18 Trial 5: 0-46 hpf
+
+Timepoints:
+T0 - 161 min (2.7 hpf) [0 hr]
+T1 - 221 min (3.7 hpf) [1 hr]
+T4 - 521 min (8.7 hpf) [6 hr]
+T7 - 881 min (14.7 hpf) [12 hr]
+T9 - 1605 min (26.8 hpf) [24.1 hr]
+T10 - 1961 min (32.7 hpf) [30 hr]
+T11 - 2918 min (48.6 hpf) [46 hr]
+
+Old:
+T2 - 4.7 hpf (2 hr) [V1]
+
+```{r Import XLA O18 T5 }
+
+XLA_T5.df <- filter_raw("XLA-O18-T5_OptLabel-Fractionated.csv", 9)
+colnames(XLA_T5.df) <- c("Protein_ID", "Peptide", "TMTc_sn",
+                         "T0", "N1", "N4", "O1", "O4", "O7", "O9", "O10", "O11",
+                         "PPM_Filter")
+XLA_T5.df <- XLA_T5.df %>%
+  select(Protein_ID, Peptide, T0, N1, N4, O1, O4, O7, O9, O10, O11,
+         TMTc_sn, PPM_Filter)
+
+#Calculating time
+XLA_T5.time.min <- c(161, 221, 521, 881, 1605, 1961, 2918) - 161
+XLA_T5.time.hrs <- XLA_T5.time.min / 60
+
+#Applying PPM Filter for TMTproC results
+XLA_T5.df <- XLA_T5.df[XLA_T5.df$PPM_Filter == 1,]
+
+#sn_filter.df is a dataframe of the total signal for each protein
+#   peptides are filtered as part of filter_raw
+T5.sn_filter <- data.frame(Protein_ID = unique(XLA_T5.df$Protein_ID))
+T5.sn_filter["Total_sn"] <- apply(T5.sn_filter, 1, function(x) {
+  sn_filter(x, XLA_T5.df) })
+XLA_T5.df[c("TMTc_sn", "PPM_Filter")] <- NULL
+
+#Removing proteins whose total signal is very low
+T5.passed_filter <- T5.sn_filter[T5.sn_filter$Total_sn > 100,]$Protein_ID
+XLA_T5.df <- XLA_T5.df[XLA_T5.df$Protein_ID %in% T5.passed_filter,]
+
+XLA_T5.df <- norm_XLA(XLA_T5.df)
+
+```
+
+# Xenopus O18 Trial 6
+
+Timepoints:
+
+T0 - 150 min (2.5 hpf) [0 hr]
+T1 - 210 min (3.5 hpf) [1 hr]
+T4 - 510 min (8.5 hpf) [6 hr]
+T7 - 930 min (15.5 hpf) [13 hr]
+T9 - 1591 min (26.5 hpf) [24.02 hr]
+T10 - 1922 min (32.03 hpf) [29.5 hr]
+T11 - 3030 min (50.5 hpf) [48 hr]
+
+```{r Import XLA O18 T5 }
+
+XLA_T6.df <- filter_raw("XLA-O18-T6_OptLabel_Fractionated.csv", 9)
+colnames(XLA_T6.df) <- c("Protein_ID", "Peptide", "TMTc_sn",
+                         "T0", "N1", "N4", "O1", "O4", "O7", "O9", "O10", "O11",
+                         "PPM_Filter")
+XLA_T6.df <- XLA_T6.df %>%
+  select(Protein_ID, Peptide, T0, N1, N4, O1, O4, O7, O9, O10, O11,
+         TMTc_sn, PPM_Filter)
+
+#Calculating time 
+XLA_T6.time.min <- c(150, 210, 510, 930, 1591, 1922, 3030) - 150
+XLA_T6.time.hrs <- XLA_T6.time.min / 60
+
+#Applying PPM Filter for TMTproC results
+XLA_T6.df <- XLA_T6.df[XLA_T6.df$PPM_Filter == 1,]
+
+#sn_filter.df is a dataframe of the total signal for each protein
+#   peptides are filtered as part of filter_raw
+T6.sn_filter <- data.frame(Protein_ID = unique(XLA_T6.df$Protein_ID))
+T6.sn_filter["Total_sn"] <- apply(T6.sn_filter, 1, function(x) {
+  sn_filter(x, XLA_T6.df) })
+XLA_T6.df[c("TMTc_sn", "PPM_Filter")] <- NULL
+
+#Removing proteins whose total signal is very low
+T6.passed_filter <- T6.sn_filter[T6.sn_filter$Total_sn > 100,]$Protein_ID
+XLA_T6.df <- XLA_T6.df[XLA_T6.df$Protein_ID %in% T6.passed_filter,]
+
+XLA_T6.df <- norm_XLA(XLA_T6.df)
+
+```
+
+
+```{r Viewing resulting dataframes}
+
+XLA_T5.df
+XLA_T6.df
+
+```
+
+
+# Amino Acid Analysis
+
+USING MOUSE AMINO ACID LEVELS AND XLA PEPTIDES
+
+```{r Importing AA Table from Spline Fits}
+
+# AA_M0.m <- read.csv("XLA_AA-Label-M0_Table.csv")
+AA_M0.m <- read.csv("MUS_AA-Label-M0_Table.csv")
+AA_M0.m <- AA_M0.m %>% as.matrix
+
+# AA_M2.m <- read.csv("XLA_AA-Label-M2_Table.csv")
+AA_M2.m <- read.csv("MUS_AA-Label-M2_Table.csv")
+AA_M2.m <- AA_M2.m %>% as.matrix
+
+# calculate probability of unlabeled incorporation into a peptide
+# ... labeling of M0 + labeling of M+1 / 2
+# ... (if amino acid is M+2, M+3, M+4, etc, then the probability of a label incorporation is probably 100%, so these are accounted for by M0)
+AA_matrix <- AA_M0.m[,-1] + (AA_M2.m[,-1]/2)
+AA_matrix[AA_matrix > 1] <- 1
+
+
+
+# find amino acids that are missing data, and save a list of these which will be used later (we will impute the labeling in these)
+
+# ... find missing amino acids
+missing_AA <-  aa.profiles$AA[!aa.profiles$AA %in%
+                                colnames(AA_M0.table)[2:length(colnames(AA_M0.table))]]
+# ... write list of missing amino acids used in the peptide_AA_fit function
+miss_AA_replace <-  paste("[", paste(missing_AA, collapse=""),
+                          "]", sep="")
+
+
+
+
+#Time sequence from which to query AA light probabilities
+# spline.times <- c(seq(0, 300, by=10), seq(340, 1440, by=100))
+spline.times <- c(seq(0, 300, by=10), seq(360, 1440, by=60), seq(2880, 10080, by=1440))
+
+
+```
+
+
+modified to account for maximum potential labeling
+```{r Implementing individual AAs for peptide probability}
+
+#Exponential decay function with two parameters and predetermined plateau
+# ... k1 = initial labeling
+# ... k2 = rate
+# ... pU = predetermined plateau (calculated in the peptide_AA_fit function)
+decay_fcn <- function(t, k1, k2, pU) { k1* exp(-k2*t) + pU}
+
+#Function to fit all peptide decay
+peptide_AA_fit <- function(peptide) {
+  
+  #Replacing non-identified amino acids with the median
+  peptide <- gsub(miss_AA_replace, "X", peptide)
+  # print(peptide%>%head(3))
+  peptide <- table(strsplit(peptide,"")) #Splitting to structure matrix
+  # print(peptide%>%head(3))
+
+  #Creating empty matrix of the entire amino acid table
+  peptide_matrix <- matrix(0, nrow = length(spline.times), ncol = ncol(AA_M0.m) - 1)
+  colnames(peptide_matrix) <- colnames(AA_M0.m)[-1]
+  # print(peptide_matrix%>%head(3))
+
+  #Replacing AA column with number of amino acids
+  for (i in 1:length(peptide)) {
+    peptide_matrix[,names(peptide[i])] <- peptide[i] }
+  # print(peptide_matrix%>%head(3))
+  
+
+  #Raising AA table to the number of AA instances in peptide    
+  pep_values <- AA_matrix ^ peptide_matrix
+  pep_values <- apply(pep_values, 1, prod) #Calculating product for each row
+  
+  # pep_values is the probability that this peptide is unlabeled for each timepoint in the spline.times
+  
+  # here, pU is roughly estimated by just taking the probability for the final timepoint
+  pU <- pep_values %>% tail(1)
+  
+
+  # Fitting using nlsLM which is less limited for starting values
+  #   decay_fcn is an exponential decay function with two parameters defined above
+  decay.fit <- nlsLM(pep_values ~ decay_fcn(spline.times, k1, k2, pU),
+                     start = list(k1=0.5, k2=0.5), lower = c(0, 0),
+                     control = list(maxiter = 1000))
+  fit.values <- coef(decay.fit) %>% as.numeric #Extracting fit
+  
+  # add the final plateau to the output
+  fit.values[[3]] <- pU
+
+  return(fit.values) }
+
+#Selecting peptides for proteins identified as possibly degrading
+all.peps <- unique(c(XLA_T5.df$Peptide, XLA_T6.df$Peptide)) #Ensuing peptides are unique
+#test.peps <- unique(c(XLA_T5.df$Peptide))[1:3]
+
+#Applying exponential decay fit function to theoretical peptide decay
+peps.decay <- lapply(all.peps, peptide_AA_fit) #40 seconds
+#test.decay <- lapply(test.peps, peptide_AA_fit)
+
+#Binding vectors from output into matrix row and converting to data.frame
+#peps.decay <- test.decay
+peps.decay <- do.call(rbind, peps.decay) %>% as.data.frame
+colnames(peps.decay) <- c("k1", "k2", "pU") #Renaming default columns
+#Setting Peptide names to be able to key later on
+peps.decay["Peptide"] <- all.peps
+peps.decay <- peps.decay %>% select(Peptide, everything()) #Reorganining
+
+peps.decay
+
+```
+
+
+theo.k1.histogram
+```{r}
+
+theo.k1.hist <-
+  peps.decay %>%
+    ggplot(aes(x=k1)) +
+    labs(title="Distribution of Theoretical fit Y intercept", x="k1 value", y="Frequency") +
+    geom_vline(xintercept=median(peps.decay$k1), color="red") +
+    geom_histogram(bins=60) +
+    theme_bw() +
+      theme(#aspect.ratio = 1,
+        axis.text=element_text(size=12,colour="black"),
+        plot.title = element_text(size=16, face="bold"),
+        axis.title.x = element_text(size=14, face="bold"),
+        axis.title.y = element_text(size=14, face="bold"),
+        axis.title = element_blank(),
+        panel.border = element_rect(size=1.25),
+        legend.position = "none") +
+    scale_x_log10()
+#  coord_cartesian(xlim=c(0,1))
+
+theo.k1.hist
+
+
+
+
+```
+
+theo.k2.histogram
+```{r}
+
+theo.k2.hist <-
+  peps.decay %>%
+    ggplot(aes(x=k2*60)) + # convert from minutes to hours
+    labs(title="Distribution of Theoretical Fastest Possible Rate Constant", x="k2 value (per hour)", y="Frequency") +
+    geom_vline(xintercept=median(peps.decay$k2 * 60), color="red") + # convert minutes to hours
+    geom_histogram(bins=60) +
+    theme_bw() +
+      theme(#aspect.ratio = 1,
+        axis.text=element_text(size=12,colour="black"),
+        plot.title = element_text(size=16, face="bold"),
+        axis.title.x = element_text(size=14, face="bold"),
+        axis.title.y = element_text(size=14, face="bold"),
+        axis.title = element_blank(),
+        panel.border = element_rect(size=1.25),
+        legend.position = "none") +
+    #scale_x_log10() +
+    coord_cartesian(xlim=c(0, NA))
+
+theo.k2.hist
+
+
+
+
+```
+theo.pU.histogram
+```{r}
+
+theo.pU.hist <-
+  peps.decay %>%
+    ggplot(aes(x=pU)) +
+    labs(title="Distribution of Theoretical Final Unlabeled Fraction", x="pU value", y="Frequency") +
+    geom_vline(xintercept=median(peps.decay$pU), color="red") +
+    geom_histogram(bins=120) +
+    #geom_histogram(aes(x=pU*2), fill="cyan", color="black", alpha=0.2, bins=120) +
+    theme_bw() +
+      theme(#aspect.ratio = 1,
+        axis.text=element_text(size=12,colour="black"),
+        plot.title = element_text(size=16, face="bold"),
+        axis.title.x = element_text(size=14, face="bold"),
+        axis.title.y = element_text(size=14, face="bold"),
+        axis.title = element_blank(),
+        panel.border = element_rect(size=1.25),
+        legend.position = "none") +
+        xlim(0, 1)
+#  coord_cartesian(xlim=c(0,1))
+
+theo.pU.hist
+
+
+
+
+```
+
+theoretical y intercept - pU
+```{r}
+
+theo.pU.hist <-
+  peps.decay %>%
+    ggplot(aes(x=k1-pU)) +
+    labs(title="Distribution of Theoretical Yo-pU", x="k1 - pU", y="Frequency") +
+    geom_vline(xintercept=median(peps.decay$k1 - peps.decay$pU), color="red") +
+    geom_histogram(bins=120) +
+    #geom_histogram(aes(x=pU*2), fill="cyan", color="black", alpha=0.2, bins=120) +
+    theme_bw() +
+      theme(#aspect.ratio = 1,
+        axis.text=element_text(size=12,colour="black"),
+        plot.title = element_text(size=16, face="bold"),
+        axis.title.x = element_text(size=14, face="bold"),
+        axis.title.y = element_text(size=14, face="bold"),
+        axis.title = element_blank(),
+        panel.border = element_rect(size=1.25),
+        legend.position = "none") +
+        xlim(0, 1)
+#  coord_cartesian(xlim=c(0,1))
+
+theo.pU.hist
+
+
+
+
+```
+
+
+
+```{r Plot: Peptide k2 histogram and example theoretical peptide decay}
+
+theo.k2.hist <- ggplot(peps.decay, aes(x=k2)) + 
+  geom_histogram(binwidth=0.005, fill="grey", color="black") +
+  labs(title="Distribution of Theoretical Exponential Peptide Decay",
+       x="k2 Value", y="Frequency") +
+  geom_vline(xintercept=median(peps.decay$k2), color="red") +
+  theme_bw() +
+  theme(#aspect.ratio = 1,
+        axis.text=element_text(size=12,colour="black"),
+        plot.title = element_text(size=16, face="bold"),
+        axis.title.x = element_text(size=14, face="bold"),
+        axis.title.y = element_text(size=14, face="bold"),
+        axis.title = element_blank(),
+        panel.border = element_rect(size=1.25),
+        legend.position = "none") +
+  coord_cartesian(xlim=c(0,.3))
+
+min_pep.decay <- peps.decay[peps.decay$k2 == min(peps.decay$k2),]
+max_pep.decay <- peps.decay[peps.decay$k2 == max(peps.decay$k2),]
+
+#Finds the index of the value in the k2 column that is closest to its median value
+med_pep.decay <- peps.decay[which.min(abs(peps.decay$k2 - median(peps.decay$k2))),]
+
+example_peptide.decay <- ggplot() +
+  geom_vline(xintercept=6, color="black", size=1, linetype="dashed") +
+  annotate("rect", xmin = 1.25, xmax = 8.25, ymin = 0.525, ymax = 0.875,
+           fill = "white", color="black") +  
+  geom_line(data=data.frame(Time=seq(0,1440,1)/60,
+                       Fraction=decay_fcn(seq(0,1440,1),
+                                          min_pep.decay$k1, min_pep.decay$k2, min_pep.decay$pU)),
+            aes(x=Time, y=Fraction, group=1), color="darkgreen", size=1) +
+  annotate("text", x = 4.75, y = 0.8, label = min_pep.decay$Peptide, size=6,
+           fontface = "bold", color="darkgreen") +
+  geom_line(data=data.frame(Time=seq(0,1440,1)/60,
+                       Fraction=decay_fcn(seq(0,1440,1),
+                                          med_pep.decay$k1, med_pep.decay$k2, med_pep.decay$pU)),
+            aes(x=Time, y=Fraction, group=1), size=1, color="darkorchid3") +
+  annotate("text", x = 4.75, y = 0.7, label = med_pep.decay$Peptide, size=6,
+           fontface = "bold", color="darkorchid3") +
+  geom_line(data=data.frame(Time=seq(0,1440,1)/60,
+                       Fraction=decay_fcn(seq(0,1440,1),
+                                          max_pep.decay$k1, max_pep.decay$k2, max_pep.decay$pU)),
+            aes(x=Time, y=Fraction, group=1), color="red", size=1) +
+  annotate("text", x = 4.75, y = 0.6, label = max_pep.decay$Peptide, size=6,
+           fontface = "bold", color="red") +
+  theme_bw() +
+  labs(x="Time after Labeling Start", y="Theoretical Light Peptide Possible",
+       title="Peptide examples of decay fit") +
+  theme(aspect.ratio = 1,
+        axis.text=element_text(size=12,colour="black"),
+        plot.title = element_text(size=16, face="bold"),
+        axis.title.x = element_text(size=14, face="bold"),
+        axis.title.y = element_text(size=14, face="bold"),
+        axis.title = element_blank(),
+        panel.border = element_rect(size=1.25),
+        legend.position = "none") +
+  coord_cartesian(ylim=c(0,1),
+                  xlim=c(0,6))
+  # coord_cartesian(ylim=c(0,.0005),
+  #                 xlim=c(0,8))
+
+
+
+# the same example peptide decays, except zooming out to the full timecourse
+example_peptide.decay.full <- ggplot() +
+  geom_vline(xintercept=6, color="black", size=1, linetype="dashed") +
+  annotate("rect", xmin = 12, xmax = 1100, ymin = 0.525, ymax = 0.875,
+           fill = "white", color="black") +  
+  geom_line(data=data.frame(Time=spline.times/60,
+                       Fraction=decay_fcn(spline.times,
+                                          min_pep.decay$k1, min_pep.decay$k2, min_pep.decay$pU)),
+            aes(x=Time, y=Fraction, group=1), color="darkgreen", size=1) +
+  annotate("text", x = 200, y = 0.8, label = min_pep.decay$Peptide, size=6,
+           fontface = "bold", color="darkgreen") +
+  geom_line(data=data.frame(Time=spline.times/60,
+                       Fraction=decay_fcn(spline.times,
+                                          med_pep.decay$k1, med_pep.decay$k2, med_pep.decay$pU)),
+            aes(x=Time, y=Fraction, group=1), size=1, color="darkorchid3") +
+  annotate("text", x = 200, y = 0.7, label = med_pep.decay$Peptide, size=6,
+           fontface = "bold", color="darkorchid3") +
+  geom_line(data=data.frame(Time=spline.times/60,
+                       Fraction=decay_fcn(spline.times,
+                                          max_pep.decay$k1, max_pep.decay$k2, max_pep.decay$pU)),
+            aes(x=Time, y=Fraction, group=1), color="red", size=1) +
+  annotate("text", x = 200, y = 0.6, label = max_pep.decay$Peptide, size=6,
+           fontface = "bold", color="red") +
+  theme_bw() +
+  labs(x="Time after Labeling Start (hours)", y="Theoretical Light Peptide Possible",
+       title="Peptide examples of decay fit") +
+  theme(aspect.ratio = 1,
+        axis.text=element_text(size=12,colour="black"),
+        plot.title = element_text(size=16, face="bold"),
+        axis.title.x = element_text(size=14, face="bold"),
+        axis.title.y = element_text(size=14, face="bold"),
+        axis.title = element_blank(),
+        panel.border = element_rect(size=1.25),
+        legend.position = "none") +
+  coord_cartesian(ylim=c(0,1),
+                  xlim=c(0,max(spline.times)))
+
+
+
+
+
+# #Uncomment for new image!
+# tiff("Graphs/XLA_AAA/Dist_k2_Values_PeptideDecay.tiff", units="in",
+#      width=8, height=6, res=300)
+
+theo.k2.hist
+
+# dev.off() #Uncomment for new image!
+
+
+# #Uncomment for new image!
+# tiff("Graphs/XLA_AAA/PeptideDecayFit_Examples.tiff", units="in",
+#      width=5, height=5, res=300)
+
+example_peptide.decay
+
+
+
+# dev.off() #Uncomment for new image!
+
+
+# #Uncomment for new image!
+# tiff("Graphs/XLA_AAA/PeptideDecayFit_Examples.tiff", units="in",
+#      width=5, height=5, res=300)
+
+example_peptide.decay.full
+
+
+
+# dev.off() #Uncomment for new image!
+
+
+
+```
+
+0.25% light made at 6 hours for slowest theoretical peptide.
+  -> This will be the cutoff for light data points where we consider translation rate
+     (N4 is 6 hours).
+     
+
+```{r Creating reference T5 dataframe - absolute + theoretical peptide decay fit}
+
+#'*O18 T5*
+#Subseting all proteins + peptides
+deg.full.T5 <- XLA_T5.df
+row.names(deg.full.T5) <- NULL
+
+#Merging each peptide with its own theoretical decay probability
+deg.full.T5 <- merge(deg.full.T5, peps.decay, by="Peptide")
+colnames(deg.full.T5)[12:13] <- c("Pep_k1", "Pep_k2")
+#Don't need concentrations for steady-state
+deg.ss.T5 <- deg.full.T5 %>% select(Protein_ID, Peptide, everything())
+
+#Merging all peptides with protein concentration
+# -> Important note: currently removing proteins whose concentration not available
+deg.full.T5 <- merge(deg.full.T5, XLA_Conc.df, by="Protein_ID")
+
+#'*O18 T6*
+#Subseting all proteins + peptides
+deg.full.T6 <- XLA_T6.df
+row.names(deg.full.T6) <- NULL
+
+#Merging each peptide with its own theoretical decay probability
+deg.full.T6 <- merge(deg.full.T6, peps.decay, by="Peptide")
+colnames(deg.full.T6)[12:13] <- c("Pep_k1", "Pep_k2")
+#Don't need concentrations for steady-state
+deg.ss.T6 <- deg.full.T6 %>% select(Protein_ID, Peptide, everything())
+
+#Merging all peptides with protein concentration
+# -> Important note: currently removing proteins whose concentration not available
+deg.full.T6 <- merge(deg.full.T6, XLA_Conc.df, by="Protein_ID")
+
+deg.full.T5
+deg.full.T6
+
+```
+
+
+# Simplistic steady-state model
+
+In steady-state model, D*C is a representation of amino acid labelling
+- Alex and Meera presumed it to be high or low based on a reasonable guess
+- Measuring AA labelling essentially measured D*C allowing us to replace the term
+- Nitrogens are obviously replaced with Oxygen
+
+If solving for each AA, instead of ^N -> You would multiply across for each
+- Right now, we assume things are an average
+
+
+```{r Modeling using Steady State - Exponential AA Decay}
+
+# Analytical curve model for theoretical steady-state M0 decay
+# .. Time input is in minutes
+ss_mod.curve <- function(kd, pep.fit, t){
+  values <- (kd * exp(-pep.fit*t) - pep.fit * exp(-kd*t))/(kd - pep.fit)
+  ratios <- values/sum(values)
+  return(ratios) }
+
+# Objective function for optimizer
+#  Requires kwargs - data for individual peptide and nitrogens
+# t - min
+ss_optim <- function(kd, data, t) {
+  sq_error <- 0
+  
+  #Loops each peptide row and calculates squared error from theoretical
+  #   based off kd
+  for (i in 1:nrow(data)){
+    
+    pep.data <- data[i,1:7] %>% as.numeric
+    pep.k2 <- data[i,8] %>% as.numeric
+    
+    theoretical <- ss_mod.curve(kd, pep.k2, t)
+    sq_error <- sq_error + sum((pep.data - theoretical)^2) }
+    
+  return(sq_error) }
+
+#Function to fit each unique protein
+ss_fit <- function(row, time.min, pep.df) {
+  
+  pep.data <- pep.df[pep.df$Protein_ID == row["Protein_ID"],]
+
+  light.data <- pep.data[c("T0", "N1", "N4")]
+  light.data <- light.data / rowSums(light.data)
+  
+  heavy.data <- pep.data[c("T0", "O1", "O4", "O7", "O9", "O10", "O11")]
+  heavy.data <- heavy.data / rowSums(heavy.data)
+  heavy.data <- cbind(heavy.data, data.frame(Pep = pep.data$Pep_k2))
+  
+  #Running optimize() to find optimal kD
+  deg.Opt <- optimize(f = ss_optim, interval = c(-.1, .1),
+                      data=heavy.data, t=time.min)
+
+  fit.kd <- deg.Opt$minimum #Setting value to return
+  
+  # cat(row["Protein_ID"], '\t', fit.kd, "\n")
+  # curve <- ss_mod.curve(fit.kd, mean(pep.data$Pep_k2), time.min)
+  # avg.line <- row[c("T0", "O1", "O4", "O7", "O9", "O10", "O11")] %>% as.numeric
+  # avg.line <- avg.line / sum(avg.line)
+  # 
+  # plot(time.min/60, avg.line, ylim=c(0,.5), pch=16)
+  # lines(time.min/60, rep(1,7)/7, col="red")
+  # lines(time.min/60, curve, col="blue")
+  
+  return(fit.kd) }
+
+```
+
+
+```{r Steady-state modeling for O18 T5 }
+
+#Average dataframe for data
+ss_fit_T5.df <- deg.ss.T5 %>% group_by(Protein_ID) %>%
+  summarise_if(is.numeric, median)
+
+#Merging with gene names
+ss_fit_T5.df <- merge(ss_fit_T5.df, XLA.genes, by="Protein_ID", all.x=TRUE) %>%
+  select(Protein_ID, Human_Gene, everything())
+ss_fit_T5.df[is.na(ss_fit_T5.df$Human_Gene), "Human_Gene"] <- "N/A"
+
+#Removing proteins with less than half of signal in first channel
+ss_fit_T5.df <- ss_fit_T5.df[ss_fit_T5.df$T0 > 0.5,]
+
+#Applying fitting to each protein and returning to steady state dataframe with median
+ss_fit_T5.df["SS_kD"] <- apply(ss_fit_T5.df, 1, function(row) {
+  ss_fit(row, XLA_T5.time.min, deg.ss.T5) })
+ss_fit_T5.df["SS_HL"] <- log(2) / ss_fit_T5.df$SS_kD / 60 #HL Calc
+
+ss_fit_T5.df
+
+```
+
+
+```{r Steady-state modeling for O18 T6 }
+
+#Average dataframe for data
+ss_fit_T6.df <- deg.ss.T6 %>% group_by(Protein_ID) %>%
+  summarise_if(is.numeric, median)
+
+#Merging with gene names
+ss_fit_T6.df <- merge(ss_fit_T6.df, XLA.genes, by="Protein_ID", all.x=TRUE) %>%
+  select(Protein_ID, Human_Gene, everything())
+ss_fit_T6.df[is.na(ss_fit_T6.df$Human_Gene), "Human_Gene"] <- "N/A"
+
+#Removing proteins with less than half of signal in first channel
+ss_fit_T6.df <- ss_fit_T6.df[ss_fit_T6.df$T0 > 0.5,]
+
+#Applying fitting to each protein and returning to steady state dataframe with median
+ss_fit_T6.df["SS_kD"] <- apply(ss_fit_T6.df, 1, function(row) {
+  ss_fit(row, XLA_T6.time.min, deg.ss.T6) })
+ss_fit_T6.df["SS_HL"] <- log(2) / ss_fit_T6.df$SS_kD / 60 #HL Calc
+
+ss_fit_T6.df
+
+```
+
+
+```{r BIC: Determining proteins most likely to be degrading}
+
+#BIC = n * ln(RSS/n) + k * ln(n)
+# n - number of observations
+# RSS - residual sum of squares
+# k - free parameters
+bic_fcn <- function(vector1, vector2, no.params, no.samples) {
+  RSS <- sum((vector1 - vector2)^2)
+  fit_BIC <- no.samples*log(RSS/no.samples) + no.params*log(no.samples)
+  return(fit_BIC) }
+
+bic_fit <- function(row, time.min, pep.df) {
+  
+  sub.df <- pep.df[pep.df$Protein_ID == row["Protein_ID"],]
+  sub.df[c("Protein_ID", "N1", "N4", "Pep_k1")] <- NULL
+  sub.df[2:8] <- sub.df[2:8] / rowSums(sub.df[2:8])
+  
+  long.df <- sub.df %>%
+    select(-c(Pep_k2)) %>%
+    pivot_longer(cols = -c(Peptide),
+                 names_to = "Time",
+                 values_to = "Value")
+  
+  data <- long.df$Value %>% as.numeric
+  
+  #BIC for flat proteins ~ Need to sort out as better filter
+  flat <- rep(1/7, length(data))
+  flat_BIC <- bic_fcn(data, flat, 0, length(data))
+
+  #Returning fitted values for each peptide  
+  decay.fit <- apply(sub.df, 1, function(x){
+    pep.decay <- as.numeric(x["Pep_k2"])
+    ss.kd <- as.numeric(row["SS_kD"])
+
+    curve.fit <- ss_mod.curve(ss.kd, pep.decay, time.min)
+    
+    return(list(curve.fit)) })
+  #Merging list output
+  decay.fit <- as.numeric(unlist(decay.fit))
+  
+  #Using fitted values to calculate deg BIC with 1 parameter  
+  decay_BIC <- bic_fcn(data, decay.fit, 1, length(data))  
+    
+  #Calculating separation between BIC values
+  deltaBIC <- ifelse(decay_BIC < flat_BIC, abs(decay_BIC - flat_BIC),
+                     -1 * abs(decay_BIC - flat_BIC))
+  
+  #Returning as data.frame rows
+  return(data.frame(flat.BIC = flat_BIC, decay.BIC = decay_BIC,
+                    deltaBIC = deltaBIC)) }
+
+```
+
+
+```{r Applying BIC cutoff for both experiments }
+
+#'*BIC for T5 Exp.*
+#Applying function to dataframe then binding results together
+T5_BIC.result <- apply(ss_fit_T5.df, 1, function(row){
+  bic_fit(row, XLA_T5.time.min, deg.ss.T5) })
+
+T5_BIC.result <- do.call(rbind, T5_BIC.result)
+
+#Merging dataframe with fit
+ss_fit_T5.df <- cbind(ss_fit_T5.df, T5_BIC.result)
+
+#'*BIC for T6 Exp.*
+#Applying function to dataframe then binding results together
+T6_BIC.result <- apply(ss_fit_T6.df, 1, function(row){
+  bic_fit(row, XLA_T6.time.min, deg.ss.T6) })
+
+T6_BIC.result <- do.call(rbind, T6_BIC.result)
+
+#Merging dataframe with fit
+ss_fit_T6.df <- cbind(ss_fit_T6.df, T6_BIC.result)
+
+```
+
+
+```{r}
+
+ss_fit.merge <- merge(ss_fit_T5.df[c("Protein_ID", "SS_kD", "SS_HL", "deltaBIC")],
+                      ss_fit_T6.df[c("Protein_ID", "SS_kD", "SS_HL", "deltaBIC")],
+                      by="Protein_ID")
+colnames(ss_fit.merge)[2:7] <- gsub("y", "T6",
+                                    gsub("x", "T5", colnames(ss_fit.merge)[2:7]))
+  
+ss_fit.merge <- merge(XLA.genes, ss_fit.merge, by="Protein_ID", all.y=TRUE)
+ss_fit.merge[is.na(ss_fit.merge$Human_Gene), "Human_Gene"] <- "N/A"
+
+#Determining as "degrading" if meets cutoff > 10 in both experiments
+ss_fit.merge["Class"] <- rep("Flat", nrow(ss_fit.merge))
+ss_fit.merge[(ss_fit.merge$deltaBIC.T5 > 10) &
+               (ss_fit.merge$deltaBIC.T6 > 10), "Class"] <- "Deg"
+ss_fit.merge[(ss_fit.merge$SS_kD.T5 < 0) |
+               (ss_fit.merge$SS_kD.T6 < 0), "Class"] <- "Flat"
+
+#1. Biplot of steady-state kd fits
+#Dataframe of proteins omitted from plot
+ss_fit.merge[(ss_fit.merge$SS_kD.T5 > 0.004) |
+               (ss_fit.merge$SS_kD.T6 > 0.004) |
+               (ss_fit.merge$SS_kD.T5 < -0.001) |
+               (ss_fit.merge$SS_kD.T6 < -0.001), ]
+
+kd_6hl <- 0.001925409
+kd_12hl <- 0.0009627044
+kd_24hl <- 0.0004813522
+kd_96hl <- 0.0001203381
+
+ss_biplot.df <- ss_fit.merge[(ss_fit.merge$SS_kD.T5 < 0.004) &
+                               (ss_fit.merge$SS_kD.T6 < 0.004) &
+                               (ss_fit.merge$SS_kD.T5 > -0.001) &
+                               (ss_fit.merge$SS_kD.T6 > -0.001), ]
+
+cor(ss_biplot.df$SS_kD.T5, ss_biplot.df$SS_kD.T6)^2
+
+ss_kd.biplot <- ggplot() +
+  geom_point(data=ss_fit.merge[ss_fit.merge$Class=="Flat",],
+             aes(x=SS_kD.T6, y=SS_kD.T5), color="skyblue", shape=1,size=3, stroke=1) +
+  geom_point(data=ss_fit.merge[ss_fit.merge$Class=="Deg",],
+             aes(x=SS_kD.T6, y=SS_kD.T5), color="black", shape=1,size=3, stroke=1) +
+  geom_abline(slope=1, intercept=0, color="red", linetype="dashed") +
+  annotate("text", x=0, y=0.003, size=6, fontface="bold", parse=TRUE,
+           label = expression(R^2==0.80)) +
+  annotate("text", x=0.003, y=0, size=6, fontface="bold",
+           label = "Degrading") +
+  annotate("text", x=0.00263, y=-0.0005, size=6, fontface="bold", color="skyblue",
+           label = "Stable") +
+  geom_point(shape=1) +
+  # geom_rect(aes(xmin = kd_12hl, ymin = kd_12hl, xmax = kd_6hl, ymax = kd_6hl),
+  #               fill = "darkgreen", alpha = 0.3, color = "black")+
+  # geom_rect(aes(xmin = kd_12hl, ymin = kd_12hl, xmax = kd_24hl, ymax = kd_24hl),
+  #               fill = "blue", alpha = 0.3, color = "black")+
+  # geom_rect(aes(xmin = kd_24hl, ymin = kd_24hl, xmax = kd_96hl, ymax = kd_96hl),
+  #               fill = "purple", alpha = 0.3, color = "black")+
+  labs(x="Replicate 2", y="Replicate 1",
+       title="Biplot of Fitted kD values") +
+  theme_bw() +
+  theme(aspect.ratio = 1,
+        plot.title = element_text(size=16,colour="black", face="bold"),
+        axis.text=element_text(size=14,colour="black"),
+        axis.title=element_text(size=14,colour="black"),
+        panel.border = element_rect(size=1.25)) +
+  coord_cartesian(xlim=c(-0.001, 0.004),
+                  ylim=c(-0.001, 0.004))
+
+ss_kd.biplot
+
+```
+
+
+```{r}
+
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

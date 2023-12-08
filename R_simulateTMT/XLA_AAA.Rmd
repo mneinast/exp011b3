@@ -1,0 +1,540 @@
+---
+title: "Xenopus Amino Acid Analysis"
+author: "Edward Cruz"
+date: "2023-07-14"
+output: html_document
+---
+
+```{r Rmd setup }
+
+rm(list=ls(all=T))
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+
+```{r}
+
+library(Biostrings)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(readxl)
+library(stringr)
+library(tidyverse)
+library(stringr)
+library(splines)
+library(patchwork) # Combine ggplots
+library(cowplot)
+
+library(data.table)
+library(purrr)
+library(tictoc)
+
+```
+
+
+# Xenopus Amino Acid Labeling Analysis
+
+Timepoints:
+
+-> T1-8 are time after labeling start
+
+T0 - Switch ~ 2 hrs, 29 min (2.48 hpf)
+T1 - 57 min (0.95 hrs)
+T2 - 2 hrs
+T3 - 3 hrs, 2 min (3.03 hrs)
+T4 - 4 hrs, 56 min (4.93 hrs)
+T5 - 7 hrs, 55 min (7.92 hrs)
+T6 - 11 hrs
+T7 - 18 hrs
+T8 - 24 hrs
+
+In AAA, we were unable to ID:
+- alanine -> interfering compounds
+- cysteine
+- histidine
+- leucine
+- tyrosine
+
+IonCount is abundance. Comparable for each metabolite between samples, but not
+  comparable between metabolites.
+Fraction.all is for each isotope out of all measured isotopes in a sample.
+
+-> Need to correct for natural isotope abundance.
+
+
+```{r Importing XLA Amino Acid Data}
+
+#Reading amino acid file
+aa.profiles <- read_xlsx("Files/Reference/AA_Profiles.xlsx")
+aa.profiles$Name <- str_replace_all(aa.profiles$Name,
+  "[^A-Za-z0-9!@#$%^&*()-=_+\\[\\]{}|;':\",.<>/?`~\\\\]", "")
+
+#Reading file
+XLA_AAA.df <- read_csv("Data/XLA_AAA/col009b_results_Neg-Pos-Merge.csv", show_col_types = FALSE)
+
+#Reformatting dataframe
+# ... Selecting amino acids and relevant columns
+# ... Removing blank shots and simplifying a column
+XLA_AAA.df <- XLA_AAA.df[XLA_AAA.df$compound %in% aa.profiles$Name,]
+XLA_AAA.df <- XLA_AAA.df[c("compound", "isotopeLabel", "Sample",
+                           "fraction.all")]
+XLA_AAA.df <- XLA_AAA.df[!grepl("blank", XLA_AAA.df$Sample),]
+XLA_AAA.df["Sample"] <- str_replace(XLA_AAA.df$Sample, "col009b_", "")
+
+#Widening dataframe to make easier to work with data
+XLA_AAA.df <- XLA_AAA.df %>%
+  pivot_wider(names_from = c(Sample),
+              values_from = c(fraction.all),
+              names_sep = "_")
+
+#Alanine has been shown to have interference with other compounds in our sample
+#   thus, it's quantification is flawed.
+XLA_AAA.df <- XLA_AAA.df[!XLA_AAA.df$compound == "alanine",]
+
+#'*Light AA Dataframe*
+
+#Forming a light dataframe to work with
+XLA_AA.M0 <- XLA_AAA.df[XLA_AAA.df$isotopeLabel == "C12 PARENT",]
+
+#Selecting numeric columns
+# med.values <- XLA_AA.M0[grepl("[012345678]", colnames(XLA_AA.M0))]
+med.M0.values <- apply(XLA_AA.M0[,3:11], 2, median) #Determining median
+#Creating an average for AAs not identified
+XLA_AA.M0 <- rbind(XLA_AA.M0, c("median", "C12 PARENT", med.M0.values))
+
+#Setting single AA names for compounds
+XLA_AA.M0 <-merge(XLA_AA.M0, aa.profiles, by.x="compound", by.y="Name",
+                  all.x=TRUE) #Then removing columns not needed
+XLA_AA.M0 <- XLA_AA.M0[!colnames(XLA_AA.M0) %in% c("Formula", "MW", "Nitrogen",
+                                                   "Carbon", "Oxygen", "Hydrogen",
+                                                   "Sulfur")]
+XLA_AA.M0 <- XLA_AA.M0 %>% select(AA, everything()) #Reorganizing data
+XLA_AA.M0[is.na(XLA_AA.M0$AA), "AA"] <- "X" #Setting X as the median
+
+
+#'*+2 Heavy AA Dataframe*
+
+#Creating a heavy dataframe of all +2 shifts
+XLA_AA.O18 <- XLA_AAA.df[grepl("O18", XLA_AAA.df$isotopeLabel),]
+#Creating second dataframe for half-incorporation of one O18
+XLA_AA.M2 <- XLA_AA.O18[XLA_AA.O18$isotopeLabel == "O18-label-1",]
+
+#Repeating process of setting median values to replace in case AA not found
+med.M2.values <- apply(XLA_AA.M2[,3:11], 2, median)
+XLA_AA.M2 <- rbind(XLA_AA.M2, c("median", "O18-label-1", med.M2.values))
+
+#Setting single AA names for compounds
+XLA_AA.M2 <-merge(XLA_AA.M2, aa.profiles, by.x="compound", by.y="Name",
+                  all.x=TRUE) #Then removing columns not needed
+XLA_AA.M2 <- XLA_AA.M2[!colnames(XLA_AA.M2) %in% c("Formula", "MW", "Nitrogen",
+                                                   "Carbon", "Oxygen", "Hydrogen",
+                                                   "Sulfur")]
+XLA_AA.M2 <- XLA_AA.M2 %>% select(AA, everything()) #Reorganizing data
+XLA_AA.M2[is.na(XLA_AA.M2$AA), "AA"] <- "X" #Setting X as the median
+
+
+XLA_AA.M0
+
+XLA_AA.M2
+
+```
+
+
+```{r Creating M0 splines for each amino acid}
+
+AA.time <- c(0, 0.95, 2, 3.03, 4.93, 7.92, 11, 18, 24)
+
+spline_M0_fit <- function(row) {
+  
+  #Select data and set as numeric
+  AA.data <- row[grepl("[012345678]", names(row))] %>% as.numeric
+
+  #Serine and methionine decay much faster -> Need earlier knot
+  if (row["compound"] == "methionine" | row["compound"] == "serine") {
+    
+    # Fit a cubic spline to the data with the specified knots
+    sp.fit <- lm(AA.data ~ bs(AA.time, degree = 3, knots = c(1,5)))
+    
+    return(sp.fit) }
+
+  else {
+
+    # Fit a cubic spline to the data with the specified knots
+    sp.fit <- lm(AA.data ~ bs(AA.time, degree = 3, knots = c(3,5)))
+    
+    return(sp.fit) }}
+
+aa.M0.spline <- apply(XLA_AA.M0, 1, spline_M0_fit)
+names(aa.M0.spline) <- XLA_AA.M0$AA
+
+```
+
+
+```{r Creating M2 splines for each amino acid}
+
+spline_M2_fit <- function(row) {
+  
+  #Select data and set as numeric
+  AA.data <- row[grepl("[012345678]", names(row))] %>% as.numeric
+
+  # Fit a cubic spline to the data with the specified knots
+  sp.fit <- lm(AA.data ~ bs(AA.time, degree = 3, knots = c(2,5)))
+  
+  return(sp.fit) }
+
+aa.M2.spline <- apply(XLA_AA.M2, 1, spline_M2_fit)
+names(aa.M2.spline) <- XLA_AA.M2$AA
+
+```
+
+
+```{r Functions to create AA tables for M0 + M2 }
+
+#Function for finding AA at any time t (minutes) from spline lists
+AA_value <- function(spline.list, AA, t) {
+  spline.fit <- spline.list[[AA]] #Retrive spline
+  #Predict value based on spline: 0-24 then return
+  spline.p <- predict(spline.fit, #NULL names in case it interferes
+                      newdata=list(AA.time = t/60)); names(spline.p) <- NULL
+  return(spline.p)}
+
+
+#Function to create table of AA values for a range of times
+generate_AA_table <- function(spline.list, t) {
+
+  #Creating a list of spline values for each individual amino acids
+  AA_table <- lapply(names(spline.list),
+                     function(AA) { return( AA_value(spline.list, AA, t) ) })
+  names(AA_table) <- names(aa.M0.spline) #Labeling List
+  
+  #Merging lists to columns in dataframe
+  AA_table <- do.call(data.frame, AA_table)
+
+  #Any value fitted above 1 -> set to 1  
+  AA_table <- apply(AA_table, 2, function(x){
+    ifelse(x>1, 1, x) }) %>% as.data.frame
+
+  #Any value fitted less than 0 -> set to 0  
+  AA_table <- apply(AA_table, 2, function(x){
+    ifelse(x<0, 0, x) }) %>% as.data.frame
+
+  #Creating time key for list and reformatting to data.table for faster indexing
+  AA_table["Time"] <- t
+  AA_table <- AA_table %>% select(Time, everything())
+  row.names(AA_table) <- NULL
+  
+  return(AA_table) }
+
+```
+
+
+```{r Tables for O18 Analysis}
+
+#Time sequence from which to query AA light probabilities
+spline.times <- c(seq(0, 300, by=10), seq(340, 1440, by=100))
+
+AA_M0.table <- generate_AA_table(aa.M0.spline, spline.times)
+AA_M2.table <- generate_AA_table(aa.M2.spline, spline.times)
+
+# write.csv(AA_M0.table, "Files/Reference/XLA_AA-Label-M0_Table.csv",
+#           row.names = FALSE)
+
+# write.csv(AA_M2.table, "Files/Reference/XLA_AA-Label-M2_Table.csv",
+#           row.names = FALSE)
+
+AA_M0.table
+AA_M2.table
+
+```
+
+
+```{r Plot: Combined M0 Decay of Amino Acids and Median }
+
+gen_aa_plot <- function(row) {
+
+  #'*AA Data*  
+  
+  AA.name <- row["compound"] %>% as.character
+  #Select data and set as numeric
+  AA.data <- row[grepl("[012345678]", names(row))]
+  
+  #Creating dataframe for amino acids for plotting
+  AA.df <- data.frame(Time = AA.time,
+                      Fraction = AA.data)
+  AA.df["Fraction"] <- AA.df$Fraction %>% as.numeric
+  row.names(AA.df) <- NULL
+
+  #'*AA Spline*    
+
+  spline.df <- M0.plot.table[c("Time", row["AA"])]
+  colnames(spline.df) <- c("Time", "Fraction")
+  
+  #Creating plot to return to make tiles for each individual AA
+  AA.plot <- ggplot() +
+    geom_line(data=spline.df,
+              aes(x=Time, y=Fraction, group=1), size=1,
+              col="Red") +
+    geom_point(data=AA.df,
+               aes(x=Time, y=Fraction), size=3) +
+    coord_cartesian(ylim=c(0,1)) +
+    scale_x_continuous(breaks = seq(0,24,4)) +
+    theme_bw() +
+    labs(x="Time", y="Fraction of Unlabeled", title=AA.name) +
+    theme(aspect.ratio = 1,
+          axis.text=element_text(size=12,colour="black"),
+          plot.title = element_text(size=16, face="bold"),
+          # axis.title.x = element_text(size=14, face="bold"),
+          # axis.title.y = element_text(size=14, face="bold"),
+          axis.title = element_blank(),
+          panel.border = element_rect(size=1.25))
+  
+  return(AA.plot) }
+
+#Generating table for plot
+M0.plot.table <- generate_AA_table(aa.M0.spline, seq(0,1440,1))
+M0.plot.table["Time"] <- M0.plot.table$Time / 60 #Converting to hours
+
+#Creating list of plots to query with gridExtra
+aa.plot <- apply(XLA_AA.M0, 1, gen_aa_plot)
+
+#Combined plot of all amino acids
+combined.aa <- (aa.plot[[1]] + aa.plot[[2]] + aa.plot[[3]] + aa.plot[[4]] +
+  aa.plot[[5]] + aa.plot[[6]] + aa.plot[[7]] + aa.plot[[8]] +
+    aa.plot[[10]] + aa.plot[[11]] + aa.plot[[12]] + aa.plot[[13]] +
+    aa.plot[[14]] + aa.plot[[15]] + aa.plot[[16]]) +
+  plot_layout(ncol=4)
+
+
+# #Uncomment for new image!
+# tiff("Graphs/XLA_AAA/XLA_AAA_SplineFit.tiff", units="in",
+#      width=12, height=12, res=300)
+
+combined.aa
+
+# dev.off() #Uncomment for new image!
+
+# #Uncomment for new image!
+# tiff("Graphs/XLA_AAA/XLA_Median-AA_SplineFit.tiff", units="in",
+#      width=4, height=4, res=300)
+
+aa.plot[[9]]
+
+# dev.off() #Uncomment for new image!
+
+```
+
+
+```{r Plot: Labeling of Amino Acids and Median}
+
+#Function to create O18 plots for each individual AA
+lbl.AA.plot <- function(compound){
+  AA.name <- compound %>% as.character()
+  
+  #Selecting data + timepoints
+  sub.data <- XLA_AA.O18[XLA_AA.O18$compound == AA.name,]
+  colnames(sub.data)[3:11] <- AA.time
+  
+  sub.data <- sub.data %>% #Melting dataframe
+    pivot_longer(cols = -c(compound, isotopeLabel),
+                 names_to = "Time", values_to = "Fraction")
+  sub.data["Time"] <- sub.data$Time %>% as.numeric
+  
+
+  if (length(unique(sub.data$isotopeLabel)) == 2) {
+    heavy.plot <- ggplot() +
+      
+      geom_point(data=sub.data[sub.data$isotopeLabel == "O18-label-1",],
+                 aes(x=Time, y=Fraction), color="#F8766D", size=3) +
+      geom_line(data=sub.data[sub.data$isotopeLabel == "O18-label-1",],
+                aes(x=Time, y=Fraction), color="#F8766D", size=1) +    
+      
+      geom_point(data=sub.data[sub.data$isotopeLabel == "O18-label-2",],
+                 aes(x=Time, y=Fraction), color="#00BFC4", size=3) +
+      geom_line(data=sub.data[sub.data$isotopeLabel == "O18-label-2",],
+                aes(x=Time, y=Fraction), color="#00BFC4", size=1) +    
+      
+      theme_bw() + coord_cartesian(ylim=c(0,1)) +
+      labs(x="Time", y="Fraction of +2Da Shifts", title=AA.name) +
+      theme(aspect.ratio = 1,
+            axis.text=element_text(size=12,colour="black"),
+            plot.title = element_text(size=16, face="bold"),
+            # axis.title.x = element_text(size=14, face="bold"),
+            # axis.title.y = element_text(size=14, face="bold"),
+            axis.title = element_blank(),
+            panel.border = element_rect(size=1.25))
+    
+    return(heavy.plot)
+    
+  } else if(length(unique(sub.data$isotopeLabel)) == 3) {
+    
+    heavy.plot <- ggplot() +
+      
+      geom_point(data=sub.data[sub.data$isotopeLabel == "O18-label-1",],
+                 aes(x=Time, y=Fraction), color="#F8766D", size=3) +
+      geom_line(data=sub.data[sub.data$isotopeLabel == "O18-label-1",],
+                aes(x=Time, y=Fraction), color="#F8766D", size=1) +    
+      
+      geom_point(data=sub.data[sub.data$isotopeLabel == "O18-label-2",],
+                 aes(x=Time, y=Fraction), color="#00BFC4", size=3) +
+      geom_line(data=sub.data[sub.data$isotopeLabel == "O18-label-2",],
+                aes(x=Time, y=Fraction), color="#00BFC4", size=1) +    
+
+      geom_point(data=sub.data[sub.data$isotopeLabel == "O18-label-3",],
+                 aes(x=Time, y=Fraction), color="#00BA38", size=3) +
+      geom_line(data=sub.data[sub.data$isotopeLabel == "O18-label-3",],
+                aes(x=Time, y=Fraction), color="#00BA38", size=1) +    
+
+      theme_bw() + coord_cartesian(ylim=c(0,1)) +
+      labs(x="Time", y="Fraction of +2Da Shifts", title=AA.name) +
+      theme(aspect.ratio = 1,
+            axis.text=element_text(size=12,colour="black"),
+            plot.title = element_text(size=16, face="bold"),
+            # axis.title.x = element_text(size=14, face="bold"),
+            # axis.title.y = element_text(size=14, face="bold"),
+            axis.title = element_blank(),
+            panel.border = element_rect(size=1.25))
+    
+    return(heavy.plot)  
+    
+  } else{
+    
+    heavy.plot <- ggplot() +
+      
+      geom_point(data=sub.data[sub.data$isotopeLabel == "O18-label-1",],
+                 aes(x=Time, y=Fraction), color="#F8766D", size=3) +
+      geom_line(data=sub.data[sub.data$isotopeLabel == "O18-label-1",],
+                aes(x=Time, y=Fraction), color="#F8766D", size=1) +    
+      
+      geom_point(data=sub.data[sub.data$isotopeLabel == "O18-label-2",],
+                 aes(x=Time, y=Fraction), color="#00BFC4", size=3) +
+      geom_line(data=sub.data[sub.data$isotopeLabel == "O18-label-2",],
+                aes(x=Time, y=Fraction), color="#00BFC4", size=1) +    
+
+      geom_point(data=sub.data[sub.data$isotopeLabel == "O18-label-3",],
+                 aes(x=Time, y=Fraction), color="#00BA38", size=3) +
+      geom_line(data=sub.data[sub.data$isotopeLabel == "O18-label-3",],
+                aes(x=Time, y=Fraction), color="#00BA38", size=1) +    
+
+      geom_point(data=sub.data[sub.data$isotopeLabel == "O18-label-4",],
+                 aes(x=Time, y=Fraction), color="#C77CFF", size=3) +
+      geom_line(data=sub.data[sub.data$isotopeLabel == "O18-label-4",],
+                aes(x=Time, y=Fraction), color="#C77CFF", size=1) +    
+      
+      theme_bw() + coord_cartesian(ylim=c(0,1)) +
+      labs(x="Time", y="Fraction of +2Da Shifts", title=AA.name) +
+      theme(aspect.ratio = 1,
+            axis.text=element_text(size=12,colour="black"),
+            plot.title = element_text(size=16, face="bold"),
+            # axis.title.x = element_text(size=14, face="bold"),
+            # axis.title.y = element_text(size=14, face="bold"),
+            axis.title = element_blank(),
+            panel.border = element_rect(size=1.25))
+    
+    return(heavy.plot) }}  
+
+lbl.plots <- lapply(unique(XLA_AA.O18$compound), lbl.AA.plot)
+
+#Merged object of all plots using patchwork
+comb.lbl.aa <- (lbl.plots[[1]] + lbl.plots[[2]] + lbl.plots[[3]] + lbl.plots[[4]] +
+  lbl.plots[[5]] + lbl.plots[[6]] + lbl.plots[[7]] + lbl.plots[[8]] +
+    lbl.plots[[9]] + lbl.plots[[10]] + lbl.plots[[11]] + lbl.plots[[12]] +
+    lbl.plots[[13]] + lbl.plots[[14]] + lbl.plots[[15]]) +
+  plot_layout(ncol=4)
+
+# #Uncomment for new image!
+# tiff("Graphs/XLA_AAA/XLA_AAA_O18-Label.tiff", units="in",
+#      width=12, height=12, res=300)
+
+comb.lbl.aa
+
+# dev.off() #Uncomment for new image!
+
+```
+
+
+```{r Composition of Yolk }
+
+#Xenopus FASTA file
+XLA.proteome <- readDNAStringSet(fasta_file <- "Files/Reference/XENLA_10.1_XGC_XBmodels_pep.fa")
+#Setting names correctly -> Only identifier and not gene symbol
+names(XLA.proteome) <- sapply(names(XLA.proteome), function(x){
+  return(strsplit(x, " ")[[1]][1]) }) %>%
+  as.character
+
+#Selecting Vitellogenin sequences
+vtga2 <- as.character(XLA.proteome["gnl|XBXL10_1g18988|XBmRNA35012|"])
+vtgb1.s <- as.character(XLA.proteome["gnl|XBXL10_1g21498|XBmRNA39801|"])
+vtgb1.l <- as.character(XLA.proteome["gnl|XBXL10_1g18990|XBmRNA35014|"])
+
+#Frequency of each amino acid
+# ... Pasting sequences together
+# ... Splitting at each character
+# ... Counting each character with table then turning into data frame
+vtgb.aa <- unlist(strsplit(paste(vtga2, vtgb1.s, vtgb1.l, sep = ""), "")) %>% 
+  table %>% data.frame
+colnames(vtgb.aa)[1] <- "AA" #Renaming columns
+
+#Repeating process for serpina1
+serpina <- as.character(XLA.proteome["gnl|XBXL10_1g35803|XBmRNA67639|"])
+
+serp.aa <- unlist(strsplit(paste(serpina, sep = ""), "")) %>% 
+  table %>% data.frame
+colnames(serp.aa)[1] <- "AA" #Renaming columns
+
+#Merging all possible amino acids with vitellogenin
+aa.frequency <- data.frame(AA = aa.profiles$AA)
+aa.frequency <- merge(aa.frequency, vtgb.aa, by="AA", all.x=TRUE)
+names(aa.frequency)[2] <- "VTGB"
+
+#Then mergin with serpina
+aa.frequency <- merge(aa.frequency, serp.aa, by="AA", all.x=TRUE)
+names(aa.frequency)[3] <- "SERP"
+
+#Setting all not found values to 0 and calculating total frequency
+aa.frequency[is.na(aa.frequency)] <- 0
+aa.frequency["Freq"] <- rowSums(aa.frequency[2:3])
+
+#Calculating percent
+aa.frequency["Percent"] <- aa.frequency$Freq / sum(aa.frequency$Freq) * 100
+
+aa.freq.plot <- ggplot(aa.frequency, aes(x= AA, y = Percent)) +
+  geom_bar(stat="identity", color="black", fill="grey") +
+  geom_hline(yintercept=5, linetype = "dashed", color = "red") +
+  theme_bw() +
+  labs(y="Percent of Protein", x="Amino Acid",
+       title = "Composition of Vitellogenin and SERPINA") +
+  theme(axis.text=element_text(size=12,colour="black"),
+        plot.title = element_text(size=16, face="bold"),
+        axis.title = element_text(size=14, face="bold"),
+        panel.border = element_rect(linewidth=1.25))
+
+# #Uncomment for new image!
+# tiff("Graphs/XLA_AAA/XLA_YolkComposition.tiff", units="in",
+#      width=7, height=4, res=300)
+
+aa.freq.plot
+
+# dev.off() #Uncomment for new image!
+
+```
+
+
+```{r}
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
