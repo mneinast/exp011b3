@@ -2,7 +2,7 @@
 *
 
 # Except for specific file types
-!*.Rmd
+!R_simulateTMT/*.Rmd
 !*.Rproj
 !*.R
 !*.md
