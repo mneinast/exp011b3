@@ -1,0 +1,1183 @@
+---
+title: "exp011b3_plotting"
+output: html_notebook
+---
+
+uses data from 'exp011c_load and wrangle.Rmd' and 'exp011c_nonlinear fitting.Rmd'.
+
+plot simple abundance / labeling over time.
+
+plot fits / fit characteristics
+
+
+
+
+# libraries
+
+```{r}
+library(tidyverse)
+library(broom)
+library(qs)
+
+```
+
+# directories
+```{r}
+
+# Set the directory path for free metabolite data
+input_free <- "./input/NA corrected/free/"
+
+# output
+output_directory <- "./output/natural abundance corrected/"
+
+```
+
+
+# import wrangled data and fits data
+labeled.data = raw labeling / ion counts
+fits.ssasymp = nonlinear fits formatted in broom style
+
+```{r}
+
+labeled.data <- read_tsv(paste0(output_directory, "labeled data.tsv"))
+fits.ssasymp <- qread(file = paste0(output_directory, "fits_ssasymp.qs")) # reading nested tables requires qs package
+
+```
+
+
+# optionally filter away some samples / observations
+```{r}
+
+labeled.data <-
+  labeled.data %>% 
+    drop_na(Animal) # remove unidentified samples
+  
+  
+fits.ssasymp <-
+  fits.ssasymp %>%
+    drop_na(Method) # remove unidentified samples
+
+```
+
+
+
+# free metabolites
+
+
+
+
+# plot overall labeling data
+
+```{r}
+
+# all compounds faceted
+g <-
+labeled.data %>%
+  filter(Tracer == "18O-water") %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+      ggplot(aes(x=Hours, y=fraction.all, shape=isotopeLabel, color=Tissue)) +
+         geom_point() +
+         #ylim(0, 0.4) +
+         theme(aspect.ratio = 1) +
+         facet_wrap(compound~Method)
+
+ggsave(g, filename="all compounds labeling.pdf", device="pdf", width=21, height=21, limitsize=T, path=output_directory)
+
+# all compounds up to 24 hours
+g <-
+labeled.data %>%
+  filter(Tracer == "18O-water") %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+      ggplot(aes(x=Hours, y=fraction.all, shape=isotopeLabel, color=Tissue)) +
+         geom_point() +
+         xlim(0, 28) +
+         theme(aspect.ratio = 1) +
+         facet_wrap(compound~Method)
+
+ggsave(g, filename="all compounds labeling_first24h.pdf", device="pdf", width=21, height=21, limitsize=T, path=output_directory)
+
+
+```
+
+# plot selected compounds in free samples
+
+```{r}
+labeled.data %>%
+  filter(Method == "free") %>%
+  filter(compound %in% c("lactate", "pyruvate", "fumarate", "taurine")) %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+      ggplot(aes(x=Hours, y=fraction.all, shape=isotopeLabel, color=Tissue)) +
+         geom_point() +
+         egg::theme_article() +
+         ylim(0, 0.6) +
+         theme(aspect.ratio = 1) +
+         facet_wrap(~compound)
+
+
+# amino acid labeling over time (each isotopomer)
+g<-
+labeled.data %>%
+  filter(Method =="free") %>%
+    filter(compound %in% c("arginine", "histidine", "lysine", "aspartate", "glutamate", "serine", "threonine", "asparagine", "glutamine", "cysteine", "selenocysteine", "glycine", "proline", "alanine", "valine", "isoleucine", "leucine", "methionine", "phenylalanine", "tyrosine", "tryptophan")) %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+            ggplot(aes(x=Hours, y=fraction.all, shape=isotopeLabel, color=Tissue)) +
+         geom_point() +
+         egg::theme_article() +
+         ylim(0, 0.6) +
+         theme(aspect.ratio = 1) +
+         facet_wrap(~compound) +
+        ggtitle("Free Amino Acid Labeling")
+g
+ggsave(g, filename="amino acid labeling all tissues_each isotope.pdf", device="pdf", width=10, height=10, limitsize=T, path=output_directory)
+
+# amino acid labeling over time (1-C12 PARENT)
+g<-
+labeled.data %>%
+  filter(Method =="free") %>%
+    # filter(Tissue %in% c("liver")) %>%
+    filter(compound %in% c("arginine", "histidine", "lysine", "aspartate", "glutamate", "serine", "threonine", "asparagine", "glutamine", "cysteine", "selenocysteine", "glycine", "proline", "alanine", "valine", "isoleucine", "leucine", "methionine", "phenylalanine", "tyrosine", "tryptophan")) %>%
+    filter(isotopeLabel == "C12 PARENT") %>%
+            ggplot(aes(x=Hours, y=(1-fraction.all), shape=Tracer, color=Tissue)) +
+         geom_point(alpha=0.5) +
+         # geom_line(alpha=0.5) +
+         egg::theme_article() +
+         ylim(0, 0.6) +
+         theme(aspect.ratio = 1) +
+         facet_wrap(~compound) +
+          ylab("Labeled Fraction (any isotopomer)") +
+        ggtitle("Free Amino Acid Labeling")
+g
+ggsave(g, filename="amino acid labeling all tissues_simplified.pdf", device="pdf", width=10, height=10, limitsize=T, path=output_directory)
+
+# amino acid labeling over time (1-C12 PARENT) IN PLASMA ONLY
+g<-
+labeled.data %>%
+  filter(Method =="free") %>%
+    filter(Tracer == "18O-water") %>%
+    filter(Tissue == "plasma") %>%
+    filter(compound %in% c("arginine", "histidine", "lysine", "aspartate", "glutamate", "serine", "threonine", "asparagine", "glutamine", "cysteine", "selenocysteine", "glycine", "proline", "alanine", "valine", "isoleucine", "leucine", "methionine", "phenylalanine", "tyrosine", "tryptophan")) %>%
+    filter(isotopeLabel == "C12 PARENT") %>%
+            ggplot(aes(x=Hours, y=(1-fraction.all), shape=isotopeLabel, color=Tissue)) +
+         geom_point(alpha=0.8) +
+         # geom_line(alpha=0.5) +
+         egg::theme_article() +
+         ylim(0, 0.6) +
+         theme(aspect.ratio = 1) +
+         facet_wrap(~compound) +
+          ylab("Labeled Fraction (any isotopomer)") +
+        ggtitle("Free Amino Acid Labeling")
+g
+ggsave(g, filename="amino acid labeling plasma_simplified.pdf", device="pdf", width=10, height=10, limitsize=T, path=output_directory)
+
+```
+
+
+M+2 amino acids
+```{r}
+# check M+2 amino acids only
+g<-
+labeled.data %>%
+  filter(Method =="free") %>%
+    filter(Tracer == "18O-water") %>%
+    filter(compound %in% c("arginine", "histidine", "lysine", "aspartate", "glutamate", "serine", "threonine", "asparagine", "glutamine", "cysteine", "selenocysteine", "glycine", "proline", "alanine", "valine", "isoleucine", "leucine", "methionine", "phenylalanine", "tyrosine", "tryptophan")) %>%
+    filter(isotopeLabel == "O18-label-2") %>%
+            ggplot(aes(x=Hours, y=fraction.all, shape=isotopeLabel, color=Tissue)) +
+         geom_point(alpha=0.8) +
+         # geom_line(alpha=0.5) +
+         egg::theme_article() +
+         ylim(0, 0.6) +
+         theme(aspect.ratio = 1) +
+         facet_wrap(~compound) +
+          ylab("Labeled Fraction (M+2 only)") +
+        ggtitle("Free Amino Acid Labeling")
+g
+ggsave(g, filename="amino acid labeling_M2.pdf", device="pdf", width=10, height=10, limitsize=T, path=output_directory)
+
+# M+2 vs M+1
+g<-
+labeled.data %>%
+  filter(Method =="free") %>%
+    filter(Tracer == "18O-water") %>%
+    filter(compound %in% c("arginine", "histidine", "lysine", "aspartate", "glutamate", "serine", "threonine", "asparagine", "glutamine", "cysteine", "selenocysteine", "glycine", "proline", "alanine", "valine", "isoleucine", "leucine", "methionine", "phenylalanine", "tyrosine", "tryptophan")) %>%
+      mutate(M1 = if_else(isotopeLabel == "O18-label-1", fraction.all, NA)) %>%
+        group_by(compound, Sample) %>%
+          mutate(ref.M1 = max(M1, na.rm=T)) %>%
+    filter(isotopeLabel == "O18-label-2") %>%
+            ggplot(aes(x=Hours, y=fraction.all/ref.M1, shape=isotopeLabel, color=Tissue)) +
+         geom_point(alpha=0.8) +
+         # geom_line(alpha=0.5) +
+         egg::theme_article() +
+         scale_y_log10() +
+         # ylim(0, 1) +
+         theme(aspect.ratio = 1) +
+         facet_wrap(~compound) +
+          ylab("M+2 / M+1") +
+        ggtitle("Free Amino Acid Labeling: M+2/M+1")
+g
+ggsave(g, filename="amino acid labeling_M2vsM1.pdf", device="pdf", width=10, height=10, limitsize=T, path=output_directory)
+
+
+```
+
+
+
+
+
+
+
+```{r}
+# compare Normalized Labeling (tissue/plasma) for amino acids only
+# reorganized from exp011b version so that this will always plot all tissues included
+g<-
+labeled.data %>%
+  filter(Method =="free") %>% filter(Hours==4) %>%
+    filter(compound %in% c("arginine", "histidine", "lysine", "aspartate", "glutamate", "serine", "threonine", "asparagine", "glutamine", "cysteine", "selenocysteine", "glycine", "proline", "alanine", "valine", "isoleucine", "leucine", "methionine", "phenylalanine", "tyrosine", "tryptophan")) %>%
+    filter(isotopeLabel == "C12 PARENT") %>%
+      mutate(plasma = if_else(Tissue=="plasma", fraction.all, NA)) %>% # pull out plasma values into a new column
+        group_by(compound, Hours, Tracer, Animal) %>%
+          mutate(ref.plasma = max(plasma, na.rm=T)) %>% # apply plasma values to corresponding observations
+        ggplot(aes(x=compound, y=(1-fraction.all)/(1-ref.plasma), color=Tissue)) +
+          egg::theme_article() +
+          geom_point() +
+          #xlim(0, 0.15) +
+          ylim(0, 2) +
+          ylab("Tissue/Plasma") +
+          theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+          #facet_wrap(~compound) +
+          ggtitle("Free Amino Acid Labeling in plasma vs tissues", subtitle="Normalized Labeling: Tissue/Plasma")
+g
+ggsave(g, filename="tissue vs plasma amino acids normalized labeling.pdf", device="pdf", width=14, height=8, limitsize=T, path=output_directory)
+
+
+# all compounds
+g<-
+labeled.data %>%
+  filter(Method =="free") %>% filter(Hours==4) %>%
+    filter(isotopeLabel == "C12 PARENT") %>%
+      mutate(plasma = if_else(Tissue=="plasma", fraction.all, NA)) %>% # pull out plasma values into a new column
+        group_by(compound, Hours, Tracer, Animal) %>%
+          mutate(ref.plasma = max(plasma, na.rm=T)) %>% # apply plasma values to corresponding observations
+        ggplot(aes(x=compound, y=(1-fraction.all)/(1-ref.plasma), color=Tissue)) +
+          egg::theme_article() +
+          geom_point() +
+          #xlim(0, 0.15) +
+          ylim(0, 2) +
+          ylab("Tissue/Plasma") +
+          theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+          #facet_wrap(~compound) +
+          ggtitle("Free Amino Acid Labeling in plasma vs tissues", subtitle="Normalized Labeling: Tissue/Plasma")
+g
+ggsave(g, filename="tissue vs plasma all compounds normalized labeling.pdf", device="pdf", width=14, height=8, limitsize=T, path=output_directory)
+```
+
+normalized labeling over time
+```{r}
+
+# compare Normalized Labeling (tissue/plasma) for amino acids only
+g<-
+labeled.data %>%
+    filter(Tracer == "18O-water") %>%
+  filter(Method =="free") %>%
+    filter(compound %in% c("arginine", "histidine", "lysine", "aspartate", "glutamate", "serine", "threonine", "asparagine", "glutamine", "cysteine", "selenocysteine", "glycine", "proline", "alanine", "valine", "isoleucine", "leucine", "methionine", "phenylalanine", "tyrosine", "tryptophan")) %>%
+    filter(isotopeLabel == "C12 PARENT") %>%
+      mutate(plasma = if_else(Tissue=="plasma", fraction.all, NA)) %>% # pull out plasma values into a new column
+        group_by(compound, Hours, Tracer, Animal) %>%
+          mutate(ref.plasma = max(plasma, na.rm=T),
+                 has.both = ! is.na(fraction.all) & ref.plasma>=0) %>% # apply plasma values to corresponding observations
+            filter(has.both) %>%
+              filter(Tissue != "plasma") %>%
+        ggplot(aes(x=Hours, y=(1-fraction.all)/(1-ref.plasma), color=Tissue)) +
+          egg::theme_article() +
+          geom_point() +
+          geom_line() +
+          facet_wrap(~compound) +
+          ylim(0, NA) +
+          scale_y_continuous(trans="log2") +
+          ylab("Tissue/Plasma") +
+          geom_hline(yintercept=1) +
+          theme(aspect.ratio=1) +
+          # theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+          #facet_wrap(~compound) +
+          ggtitle("Free Amino Acid Labeling in plasma vs tissues over time", subtitle="Normalized Labeling: Tissue/Plasma")
+g
+ggsave(g, filename="tissue vs plasma amino acids normalized labeling_dT.pdf", device="pdf", width=14, height=8, limitsize=T, path=output_directory)
+
+# compare Normalized Labeling (tissue/plasma) for all compounds
+g<-
+labeled.data %>%
+  filter(Tracer == "18O-water") %>%
+  filter(Method =="free") %>%
+    filter(isotopeLabel == "C12 PARENT") %>%
+      mutate(plasma = if_else(Tissue=="plasma", fraction.all, NA)) %>% # pull out plasma values into a new column
+        group_by(compound, Hours, Tracer, Animal) %>%
+          mutate(ref.plasma = max(plasma, na.rm=T),
+                 has.both = ! is.na(fraction.all) & ref.plasma>=0) %>% # apply plasma values to corresponding observations
+            filter(has.both) %>%
+              filter(Tissue != "plasma") %>%
+        ggplot(aes(x=Hours, y=(1-fraction.all)/(1-ref.plasma), color=Tissue)) +
+          egg::theme_article() +
+          geom_point() +
+          geom_line() +
+          facet_wrap(~compound) +
+          ylim(0, NA) +
+          scale_y_continuous(trans="log2") +
+          ylab("Tissue/Plasma") +
+          geom_hline(yintercept=1) +
+          theme(aspect.ratio=1) +
+          # theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+          #facet_wrap(~compound) +
+          ggtitle("Free Amino Acid Labeling in plasma vs tissues over time", subtitle="Normalized Labeling: Tissue/Plasma")
+g
+ggsave(g, filename="all compounds_normalized labeling_dT.pdf", device="pdf", width=21, height=21, limitsize=T, path=output_directory)
+
+```
+
+
+
+scatter
+```{r}
+
+# similar but focus on each tissue, showing scatter of plasma vs tissue for all compounds
+g<-
+labeled.data %>%
+  filter(Tracer == "18O-water") %>%
+  filter(Method =="free") %>%
+    filter(Hours==4) %>%
+    filter(compound %in% c("arginine", "histidine", "lysine", "aspartate", "glutamate", "serine", "threonine", "asparagine", "glutamine", "cysteine", "selenocysteine", "glycine", "proline", "alanine", "valine", "isoleucine", "leucine", "methionine", "phenylalanine", "tyrosine", "tryptophan")) %>%
+    filter(isotopeLabel == "C12 PARENT") %>%
+      mutate(plasma = if_else(Tissue=="plasma", fraction.all, NA)) %>% # pull out plasma values into a new column
+        group_by(compound, Hours, Tracer, Animal) %>%
+          mutate(ref.plasma = max(plasma, na.rm=T)) %>% # apply plasma values to corresponding observations
+            filter(Tissue != "plasma") %>%
+        ggplot(aes(x=(1-ref.plasma), y=(1-fraction.all), color=compound)) +
+          egg::theme_article() +
+          geom_point() +
+          facet_wrap(~Tissue) +
+          theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+          geom_abline(slope=1) +
+          xlim(0, 0.6) +
+          ylim(0, 0.6) +
+          theme(aspect.ratio=1) +
+          #facet_wrap(~compound) +
+          ggtitle("Free Amino Acid Labeling in plasma vs tissues (at 4 hours)", subtitle="Scatter Tissue vs Plasma")
+g
+ggsave(g, filename="tissue vs plasma amino acids scatter_4hours.pdf", device="pdf", width=8, height=8, limitsize=T, path=output_directory)
+
+
+```
+
+```{r}
+# similar but focus on change in the difference over time
+g<-
+labeled.data %>%
+  filter(Tracer == "18O-water") %>%
+  filter(Method =="free") %>%
+    filter( ! Animal %in% c("exp011b2_M04")) %>% # exclusion list
+      filter(compound %in% c("arginine", "histidine", "lysine", "aspartate", "glutamate", "serine", "threonine", "asparagine", "glutamine", "cysteine", "selenocysteine", "glycine", "proline", "alanine", "valine", "isoleucine", "leucine", "methionine", "phenylalanine", "tyrosine", "tryptophan")) %>%
+        filter(isotopeLabel == "C12 PARENT") %>%
+          mutate(plasma = if_else(Tissue=="plasma", fraction.all, NA)) %>% # pull out plasma values into a new column
+            group_by(compound, Hours, Tracer, Animal) %>%
+              mutate(ref.plasma = max(plasma, na.rm=T),
+                     has.both = ! is.na(fraction.all) & ref.plasma>=0) %>% # apply plasma values to corresponding observations
+                filter(Tissue != "plasma") %>% # remove plasma points from the plot
+                  filter(has.both) %>% # keep only compounds with an observation in both tissue and plasma
+        ggplot(aes(x=(1-ref.plasma), y=(1-fraction.all), color=compound)) +
+          egg::theme_article() +
+          geom_point(alpha=0.8) +
+          facet_grid(Hours~Tissue) +
+          theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+          geom_abline(slope=1) +
+          xlim(0, 1.0) +
+          ylim(0, 1.0) +
+          theme(aspect.ratio=1) +
+          #facet_wrap(~compound) +
+          ggtitle("Free Amino Acid Labeling in plasma vs tissues over time", subtitle="Scatter Tissue vs Plasma")
+g
+ggsave(g, filename="tissue vs plasma amino acids scatter_dT.pdf", device="pdf", width=8, height=8, limitsize=T, path=output_directory)
+```
+
+
+
+
+# plot amino acids relative to lactate
+
+```{r}
+
+amino.acids <- c("arginine", "histidine", "lysine", "aspartate", "glutamate", "serine", "threonine", "asparagine", "glutamine", "cysteine", "glycine", "proline", "alanine", "valine", "isoleucine", "leucine", "methionine", "phenylalanine", "tyrosine", "tryptophan")
+
+# all isotopomers
+g <-
+labeled.data %>%
+  filter(Method == "free") %>%
+  filter(compound %in% amino.acids) %>%
+  filter(Tissue %in% "plasma") %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+      ggplot(aes(x=Hours, y=fraction.all, color=isotopeLabel, shape=Tissue)) +
+         egg::theme_article() +
+         geom_point() +
+         ylim(0, 0.6) +
+         # geom_hline(yintercept=0.04, color="grey") +
+         theme(aspect.ratio = 1) +
+         facet_wrap(~compound) +
+         ggtitle("Plasma Amino Acid Labeling", subtitle="grey line indicates expected water labeling")
+g
+ggsave(g, filename="amino acid PLASMA labeling.pdf", device="pdf", width=8, limitsize=T, path=output_directory)
+
+# only M+2 and M+3
+g <-
+labeled.data %>%
+  filter(Method == "free") %>%
+  filter(compound %in% amino.acids) %>%
+  filter(Tissue %in% "plasma") %>%
+    filter( ! isotopeLabel %in% c("C12 PARENT", "O18-label-1")) %>%
+      ggplot(aes(x=Hours, y=fraction.all, color=isotopeLabel, shape=Tissue)) +
+         egg::theme_article() +
+         geom_point() +
+         ylim(0, NA) +
+         # geom_hline(yintercept=0.04, color="grey") +
+         theme(aspect.ratio = 1) +
+         facet_wrap(~compound) +
+         ggtitle("Plasma Amino Acid Labeling ONLY M+2 and M+3", subtitle="grey line indicates expected water labeling")
+g
+ggsave(g, filename="amino acid PLASMA labeling_only M+2 and M+3.pdf", device="pdf", width=8, limitsize=T, path=output_directory)
+
+
+```
+
+
+
+# plot carnosine pathway
+```{r}
+
+carn.path <- c("beta-alanine", "histidine", "carnosine", "homocarnosine", "anserine", "Ureidopropionic acid", "beta-alanyl-ornithine")
+
+g <-
+labeled.data %>%
+  filter(Method == "free") %>%
+  filter(compound %in% carn.path) %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+      ggplot(aes(x=Hours, y=fraction.all, color=Tissue)) +
+         geom_point() +
+         geom_line() +
+         egg::theme_article() +
+         ylim(0, NA) +
+         theme(aspect.ratio = 1) +
+         facet_grid(isotopeLabel~compound) +
+         ggtitle("Carnosine pathway labeling from 18O-water")
+g
+ggsave(g, filename="carnosine pathway labeling.pdf", device="pdf", width=6, limitsize=T, path=output_directory)
+
+# simplified to 1-C12
+g <-
+labeled.data %>%
+  filter(Method == "free") %>%
+  filter(compound %in% carn.path) %>%
+    filter(isotopeLabel == "C12 PARENT") %>%
+      ggplot(aes(x=Hours, y=1-fraction.all, color=Tissue)) +
+         geom_point() +
+         geom_line() +
+         egg::theme_article() +
+         ylim(0, NA) +
+         theme(aspect.ratio = 1) +
+         facet_grid(isotopeLabel~compound) +
+         ggtitle("Carnosine pathway labeling from 18O-water (all forms)")
+g
+ggsave(g, filename="carnosine pathway labeling_simplified.pdf", device="pdf", width=6, limitsize=T, path=output_directory)
+
+
+
+```
+
+# plot nucelotides
+```{r}
+nucleotides <- c("AMP", "ADP", "ATP", "GMP", "GDP", "GTP", "CMP", "CDP", "CTP", "UMP", "UDP", "UTP")
+
+g <-
+labeled.data %>%
+  filter(Method == "free") %>%
+  filter(compound %in% nucleotides) %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+      ggplot(aes(x=Hours, y=fraction.all, color=Tissue)) +
+         geom_point() +
+         geom_line() +
+         egg::theme_article() +
+         ylim(0, NA) +
+         theme(aspect.ratio = 1) +
+         facet_grid(isotopeLabel~compound) +
+         ggtitle("Nucleotide labeling from 18O-water")
+g
+ggsave(g, filename="pathway labeling_nucelotides.pdf", device="pdf", width=12, limitsize=T, path=output_directory)
+
+# simplify to 1-C12 PARENT
+g <-
+labeled.data %>%
+  filter(Method == "free") %>%
+  filter(compound %in% nucleotides) %>%
+    filter(isotopeLabel == "C12 PARENT") %>%
+      ggplot(aes(x=Hours, y=(1-fraction.all), color=Tissue)) +
+         geom_point() +
+         geom_line() +
+         egg::theme_article() +
+         ylim(0, NA) +
+         theme(aspect.ratio = 1) +
+         facet_grid(~compound) +
+         ggtitle("Nucleotide labeling from 18O-water")
+g
+ggsave(g, filename="pathway labeling_nucelotides_combined.pdf", device="pdf", width=12, limitsize=T, path=output_directory)
+
+# simple labeling within each tissue, focus on AMP, ADP, ATP
+g <-
+labeled.data %>%
+  filter(Method == "free") %>%
+  filter(compound %in% c("AMP", "ADP", "ATP", "creatine", "Creatine phosphate")) %>%
+    filter(isotopeLabel == "C12 PARENT") %>%
+      ggplot(aes(x=Hours, y=(1-fraction.all), color=compound)) +
+         geom_point() +
+         geom_line() +
+         egg::theme_article() +
+         ylim(0, 1.0) +
+         theme(aspect.ratio = 1) +
+         facet_wrap(Tissue~.) +
+         ggtitle("Nucleotide labeling from 18O-water")
+g
+ggsave(g, filename="pathway labeling_nucelotides_combined_tissues.pdf", device="pdf", width=12, limitsize=T, path=output_directory)
+```
+
+
+
+
+
+# plot glutathione related stuff
+```{r}
+
+glutathiones <- c("glutathione", "Cysteine-glutathione disulphide", "Dehydroglutathione", "glutathione disulfide")
+
+g <-
+labeled.data %>%
+  filter(Method == "free") %>%
+  filter(compound %in% glutathiones) %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+      ggplot(aes(x=Hours, y=fraction.all, color=Tissue)) +
+         geom_point() +
+         geom_line() +
+         egg::theme_article() +
+         ylim(0, NA) +
+         theme(aspect.ratio = 1) +
+         facet_grid(isotopeLabel~compound) +
+         ggtitle("Glutathione-related labeling from 18O-water")
+g
+ggsave(g, filename="pathway labeling_glutathiones.pdf", device="pdf", width=12, limitsize=T, path=output_directory)
+
+# simplify to 1-C12 PARENT
+g <-
+labeled.data %>%
+  filter(Method == "free") %>%
+  filter(compound %in% glutathiones) %>%
+    filter(isotopeLabel == "C12 PARENT") %>%
+      ggplot(aes(x=Hours, y=(1-fraction.all), color=Tissue)) +
+         geom_point() +
+         geom_line() +
+         egg::theme_article() +
+         ylim(0, NA) +
+         theme(aspect.ratio = 1) +
+         facet_grid(~compound) +
+         ggtitle("Glutathione-related labeling from 18O-water")
+g
+ggsave(g, filename="pathway labeling_glutathiones_combined.pdf", device="pdf", width=9, limitsize=T, path=output_directory)
+
+```
+
+# plot fatty acids
+
+```{r}
+
+fattyacids <- c("C16:O", "C18:1", "C18:2")
+
+g <-
+labeled.data %>%
+  filter(Method == "free") %>%
+  filter(compound %in% fattyacids) %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+      ggplot(aes(x=Hours, y=fraction.all, color=Tissue)) +
+         geom_point() +
+         geom_line() +
+         egg::theme_article() +
+         ylim(0, NA) +
+         theme(aspect.ratio = 1) +
+         facet_grid(isotopeLabel~compound) +
+         ggtitle("Fatty acid labeling from 18O-water")
+g
+ggsave(g, filename="pathway labeling_FAs.pdf", device="pdf", width=6, limitsize=T, path=output_directory)
+
+# simplify to 1-C12 PARENT
+g <-
+labeled.data %>%
+  filter(Method == "free") %>%
+  filter(compound %in% fattyacids) %>%
+    filter(isotopeLabel == "C12 PARENT") %>%
+      ggplot(aes(x=Hours, y=(1-fraction.all), color=compound)) +
+         geom_point() +
+         geom_line() +
+         egg::theme_article() +
+         ylim(0, 0.4) +
+         theme(aspect.ratio = 1) +
+         facet_wrap(~Tissue) +
+         ggtitle("Fatty acid labeling from 18O-water")
+g
+ggsave(g, filename="pathway labeling_FAs_combined.pdf", device="pdf", width=9, limitsize=T, path=output_directory)
+
+```
+
+
+
+
+# plot volcano differences in labeling for all compounds in all tissues
+x axis = log2(tissue/plasma), where labeling is simplified to all isotopes
+y axis = maximum labeling detected in all tissues
+facet by tissue
+```{r}
+# quasi-volcano.  shows individual variation but confusing to interpret
+g<-
+labeled.data %>%
+  filter(Method =="free") %>%
+    filter(Animal %in% c("exp011b2_M01", "exp011b2_M02", "exp011b2_M03")) %>%
+        filter(isotopeLabel == "C12 PARENT") %>%
+          mutate(plasma = if_else(Tissue=="plasma", 1-fraction.all, NA)) %>% # pull out plasma values into a new column
+            group_by(compound, Hours, Tracer, Animal) %>%
+              mutate(total.labeling = 1-fraction.all,
+                     ref.plasma = max(plasma, na.rm=T),
+                     has.both = ! is.na(total.labeling) & ref.plasma>=0) %>%  # apply plasma values to corresponding observations
+                filter(Tissue != "plasma") %>% # remove plasma points from the plot
+                  group_by(Tracer, Tissue, compound) %>% mutate(max.label = max(total.labeling)) %>% ungroup() %>%
+                    filter(has.both) %>%  # keep only compounds with an observation in both tissue and plasma
+        ggplot(aes(x=total.labeling/ref.plasma, y=max.label, group=compound)) +
+          egg::theme_article() +
+          geom_point(alpha=0.5) +
+          geom_line(alpha=0.1) +
+          facet_wrap(~Tissue) +
+          scale_x_continuous(trans="log2") +
+          ylim(0, 1.0) +
+          theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+          theme(aspect.ratio=1) +
+          geom_vline(xintercept=1) +
+          #facet_wrap(~compound) +
+          ggtitle("Free Amino Acid Labeling in plasma vs tissues over time", subtitle="Scatter Tissue vs Plasma")
+g
+ggsave(g, filename="tissue vs plasma_all compounds_quasivolcano.pdf", device="pdf", width=12, height=12, limitsize=T, path=output_directory)
+
+# histogram of differences in each tissue
+g<-
+labeled.data %>%
+  filter(Method =="free") %>%
+    filter(Animal %in% c("exp011b2_M01", "exp011b2_M02", "exp011b2_M03")) %>%
+        filter(isotopeLabel == "C12 PARENT") %>%
+          mutate(plasma = if_else(Tissue=="plasma", 1-fraction.all, NA)) %>% # pull out plasma values into a new column
+            group_by(compound, Hours, Tracer, Animal) %>%
+              mutate(total.labeling = 1-fraction.all,
+                     ref.plasma = max(plasma, na.rm=T),
+                     has.both = ! is.na(total.labeling) & ref.plasma>=0) %>%  # apply plasma values to corresponding observations
+                filter(Tissue != "plasma") %>% # remove plasma points from the plot
+                  group_by(Tracer, Tissue, compound) %>% mutate(max.label = max(total.labeling)) %>% ungroup() %>%
+                    filter(has.both) %>% # keep only compounds with an observation in both tissue and plasma
+        ggplot(aes(x=log2(total.labeling/ref.plasma), fill=as.factor(Hours))) +
+          egg::theme_article() +
+          geom_histogram(alpha=0.5, position="identity", color="black") +
+          xlim(-5, 5) +
+          facet_wrap(~Tissue) +
+          theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+          theme(aspect.ratio=1) +
+          geom_vline(xintercept=0, color="grey") +
+          #facet_wrap(~compound) +
+          ggtitle("All metabolite labeling in plasma vs tissues over time", subtitle="Distribution of differences over time")
+g
+ggsave(g, filename="tissue vs plasma_all compounds_histogram.pdf", device="pdf", width=7, height=7, limitsize=T, path=output_directory)
+```
+
+
+
+
+# what compounds have sustained labeling differences between tissue and plasma?
+```{r}
+
+g <-
+labeled.data %>%
+  filter(Method =="free") %>%
+    filter(Animal %in% c("exp011b2_M01", "exp011b2_M02", "exp011b2_M03")) %>%
+        filter(isotopeLabel == "C12 PARENT") %>%
+          mutate(plasma = if_else(Tissue=="plasma", 1-fraction.all, NA)) %>% # pull out plasma values into a new column
+            group_by(compound, Hours, Tracer, Animal) %>%
+              mutate(total.labeling = 1-fraction.all,
+                     ref.plasma = max(plasma, na.rm=T),
+                     has.both = ! is.na(total.labeling) & ref.plasma>=0) %>%  # apply plasma values to corresponding observations
+                filter(Tissue != "plasma") %>% # remove plasma points from the plot
+                  group_by(Tracer, Tissue, compound) %>% mutate(max.label = max(total.labeling)) %>% ungroup() %>%
+                    filter(has.both) %>% # keep only compounds with an observation in both tissue and plasma
+                      filter(abs(log2(total.labeling/ref.plasma))>1) %>%
+                        mutate(higher.in.tissue = total.labeling/ref.plasma > 1) %>%
+      ggplot(aes(x=Hours, y=total.labeling, color=Tissue)) +
+         geom_point() +
+         geom_line() +
+         egg::theme_article() +
+         ylim(0, 1.0) +
+         theme(aspect.ratio = 1) +
+         facet_wrap(higher.in.tissue~compound) +
+         ggtitle("Compartmented labeling from 18O-water")
+g
+ggsave(g, filename="tissue vs plasma_compartmented.pdf", device="pdf", width=12, height=12, limitsize=T, path=output_directory)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# plot differences in labeling between liver and plasma free metabolites
+```{r}
+
+# plasma labeling - liver labeling on x axis, and maximum labeling on y axis
+labeled.data %>%
+  filter(Method=="free") %>% filter(Hours == 4) %>%
+    filter(isotopeLabel == "C12 PARENT") %>%
+      select(c(compound, fraction.all, Tissue)) %>%
+      pivot_wider(values_from = fraction.all, names_from = Tissue, id_cols = compound, values_fn = mean) %>%
+        mutate(maxlabel = ifelse(liver>=plasma, (1-liver), (1-plasma))) %>%
+        ggplot(aes(x=log(liver/plasma, base=2), y=maxlabel)) +
+          geom_point() +
+          # geom_text(aes(label=compound)) +
+          ggtitle("scatter difference in 18O labeling plasma vs liver", subtitle="only 4 hours\nuseful for finding significant differences in labeling")
+
+# focus on fatty acids, showing labeling over time in plasma and liver
+labeled.data %>%
+  filter(Method=="free") %>% filter(compound %in% c("C16:0", "C18:1", "C18:2", "lactate", "citrulline", "citrulline")) %>%
+    filter(isotopeLabel == "O18-label-1") %>%
+      select(c(compound, isotopeLabel, fraction.all, Hours, Tissue)) %>%
+      pivot_wider(values_from = fraction.all, names_from = Tissue, id_cols = c(compound, isotopeLabel, Hours), values_fn = mean) %>%
+        mutate(maxlabel = ifelse(liver>=plasma, liver, plasma)) %>%
+        ggplot(aes(x=liver, y=plasma)) +
+          geom_point(aes(color=as.factor(Hours))) +
+          scale_color_discrete(type = RColorBrewer::brewer.pal(7, "Blues")) +
+          facet_wrap(~compound) +
+          geom_abline(slope=1) +
+          theme(aspect.ratio = 1) +
+          ggtitle("18O Labeling in liver vs plasma", subtitle="may suggest compartmentation if labeling is not equal")
+
+
+# amino acids
+# focus on fatty acids, showing labeling over time in plasma and liver
+g <-
+labeled.data %>%
+  filter(Method=="free") %>% filter(compound %in% amino.acids) %>%
+    filter( ! compound %in% c("asparagine", "aspartate", "histidine", "proline")) %>% # filter these out because they're missing data for one of tissues
+    filter(isotopeLabel == "O18-label-1") %>%
+      select(c(compound, isotopeLabel, fraction.all, Hours, Tissue)) %>%
+      pivot_wider(values_from = fraction.all, names_from = Tissue, id_cols = c(compound, isotopeLabel, Hours), values_fn = mean) %>%
+        mutate(maxlabel = ifelse(liver>=plasma, liver, plasma)) %>%
+        ggplot(aes(x=liver, y=plasma)) +
+          geom_point(aes(color=as.factor(Hours))) +
+          scale_color_discrete(type = RColorBrewer::brewer.pal(7, "Blues")) +
+          egg::theme_article() +
+          facet_wrap(~compound) +
+          geom_abline(slope=1) +
+          theme(aspect.ratio = 1) +
+          xlim(0, 0.15) +
+          ylim(0, 0.15) +
+          ggtitle("18O Labeling in liver vs plasma", subtitle="may suggest compartmentation if labeling is not equal")
+g
+ggsave(g, filename="amino acid labeling in plasma vs tissue.pdf", device="pdf", width=8, height=8, limitsize=T, path=output_directory)
+
+# this is kinda silly - it would be more intuitive to show time on x axis, labeling on y axis, and just show different colors for plasma / liver
+
+
+
+
+```
+
+
+
+# plot totals in free metabolites relative to baseline
+```{r}
+
+g <-
+  labeled.data %>%
+    filter(Method == "free") %>%
+        filter(isotopeLabel == "C12 PARENT") %>%
+          arrange(Hours) %>%
+            group_by(compound, Method, Tissue, Tracer) %>%
+              mutate(sumIC.vs.baseline = sumIC / first(sumIC)) %>%
+            ggplot(aes(x=Hours, y=log2(sumIC.vs.baseline), color=Method, shape=Tissue)) +
+               geom_point() +
+               # ylim(0, 0.4) +
+               theme(aspect.ratio = 1) +
+               facet_wrap(~compound) +
+               ggtitle("Total Abundance over Time")
+
+ggsave(g, filename="all compounds totals.pdf", device="pdf", width=21, height=21, limitsize=T)
+
+
+```
+
+
+
+# hydrolyzed protein
+
+
+```{r}
+
+
+# all compounds in hydrolyzed protein data
+labeled.data %>%
+  filter(Method == "hydrolyzed_protein") %>%
+    # filter(compound %in% amino.acids) %>%
+      filter(isotopeLabel != "C12 PARENT") %>%
+        filter( ! is.na(Method)) %>%
+        ggplot(aes(x=Hours, y=fraction.all, color=compound)) +
+           geom_point() +
+           ylim(0, 0.15) +
+           theme(aspect.ratio = 1) +
+           facet_wrap(Method~isotopeLabel)
+
+
+# amino acids
+labeled.data %>%
+  filter(compound %in% amino.acids) %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+      filter( ! is.na(Method)) %>%
+      ggplot(aes(x=Hours, y=fraction.all, color=compound)) +
+         geom_point() +
+         ylim(0, 0.15) +
+         theme(aspect.ratio = 1) +
+         facet_wrap(Method~isotopeLabel)
+
+# alanine, serine, proline
+labeled.data %>%
+  filter(compound %in% c("serine", "glycine", "alanine")) %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+      filter( ! is.na(Method)) %>%
+      ggplot(aes(x=Hours, y=fraction.all, color=Tissue, shape=Method)) +
+         geom_point() +
+         ylim(0, 0.15) +
+         theme(aspect.ratio = 1) +
+         facet_wrap(isotopeLabel~compound)
+
+```
+
+
+
+
+
+
+# plot fits for each compound across methods and tissues
+
+```{r}
+# plot two compounds
+
+# fits.ssasymp %>%
+#   filter(compound %in% c("lactate", "pyruvate")) %>%
+#     unnest(augmented) %>%
+#       ggplot(aes(x=Hours, color=Method, shape=Tissue)) +
+#         geom_point(aes(y=fraction.all)) +
+#         geom_line(aes(y=.fitted)) +
+#         facet_wrap(~compound)
+
+# plot all successful fits
+g<-
+fits.ssasymp %>%
+  filter(fit != "failed to fit") %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+    unnest(augmented) %>%
+      ggplot(aes(x=Hours, color=Method, shape=Tissue, linetype=isotopeLabel)) +
+        geom_point(aes(y=fraction.all)) +
+        geom_line(aes(y=.fitted)) +
+        facet_wrap(~compound)
+
+
+ggsave(g, filename="all compound fits.pdf", device="pdf", width=21, height=21, limitsize=T)
+
+
+# plot alanine fits
+fits.ssasymp %>%
+  filter(compound %in% c("leucine", "alanine")) %>%
+  filter(fit != "failed to fit") %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+    unnest(augmented) %>%
+      ggplot(aes(x=Hours, color=Method, shape=Tissue, linetype=isotopeLabel)) +
+        geom_point(aes(y=fraction.all)) +
+        geom_line(aes(y=.fitted)) +
+        theme(aspect.ratio = 1) +
+        facet_wrap(compound~Tissue)
+
+# plot all fits in one graph, faceted by method
+fits.ssasymp %>%
+  filter(fit != "failed to fit") %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+      unnest(augmented) %>%
+        ggplot(aes(x=Hours, group=compound, color=Tissue)) +
+          geom_line(aes(y=.fitted, alpha=0.5)) +
+          facet_wrap(isotopeLabel~Method) +
+          theme(aspect.ratio = 1) +
+          theme(legend.position="right")
+
+# plot all compounds detected in hydrolyzed samples
+g <-
+fits.ssasymp %>%
+  filter(fit != "failed to fit") %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+      filter(compound %in% (filter(fits.ssasymp, Method %in% "hydrolyzed_protein")$compound %>% unique() )) %>%
+        unnest(augmented) %>%
+          ggplot(aes(x=Hours, color=Method, shape=Tissue, linetype=isotopeLabel)) +
+            geom_point(aes(y=fraction.all)) +
+            geom_line(aes(y=.fitted)) +
+            theme(aspect.ratio = 1) +
+            facet_wrap(compound~Tissue)         
+
+ggsave(g, filename="fits compounds in hydrolyzed protein.pdf", device="pdf", width=21, height=21, limitsize=T)
+
+# plot amino acids
+g <-
+fits.ssasymp %>%
+  filter(fit != "failed to fit") %>%
+    filter(isotopeLabel == "O18-label-1") %>%
+      filter(Method == "free") %>%
+      # filter(compound %in% c("alanine", "aspartate", "isoleucine", "leucine", "proline", "serine", "valine")) %>%
+      filter(compound %in% amino.acids) %>%
+        unnest(augmented) %>%
+          ggplot(aes(x=Hours, color=Tissue)) +
+            egg::theme_article() +
+            geom_point(aes(y=fraction.all)) +
+            geom_line(aes(y=.fitted)) +
+            theme(aspect.ratio = 1) +
+            facet_wrap(~compound) +
+            ylim(c(0, NA)) +
+            theme(legend.position = "right") +
+            ggtitle("Free amino acid labeling with 18O-1")
+g
+ggsave(g, filename="successful fit amino acids.pdf", device="pdf", width=7, height=7, limitsize=T)
+
+# plot combined amino acids, only showing O18-label-1
+fits.ssasymp %>%
+  filter(isotopeLabel == "O18-label-1") %>%
+    filter(compound %in% amino.acids) %>%
+      filter(Method == "free") %>%
+        unnest(data) %>%
+          mutate(x.bin = cut_width(x=Hours, width=1)) %>%
+        ggplot(aes(x=x.bin)) +
+        geom_boxplot(aes(y=fraction.all)) +
+        scale_x_discrete(labels=c(4, 24, 48, 72, 168, 336)) +
+        xlab("Hours") +
+        ylab("Fraction Labeled") +
+        scale_y_continuous(n.breaks=10) +
+        ggtitle("All amino acid labeling", subtitle="not corrected for natural abundance") +
+        egg::theme_article() +
+        facet_wrap(~Tissue)
+        
+
+
+
+
+```
+
+# output simple average, median, etc for each amino acid labeling
+uses raw data (not predicted from fit)
+```{r}
+
+amino.acid.summary <-
+labeled.data %>%
+  filter(isotopeLabel == "O18-label-1") %>%
+    filter(compound %in% amino.acids) %>%
+      filter(Method == "free") %>%
+        group_by(Tissue, Hours) %>%
+          summarise(mean.fraction = mean(fraction.all),
+                    median.fraction = median(fraction.all),
+                    n.observations = n())
+amino.acid.summary %>%
+  write_tsv("amino_acids_combined.tsv")
+    
+  
+
+```
+
+
+
+# plot characteristics of each fit value
+```{r}
+
+# plot parameters for each dataset
+fits.ssasymp %>%
+  filter(fit!="failed to fit") %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+    unnest(tidied) %>%
+    ggplot(aes(x=estimate)) +
+      facet_grid(interaction(Method, Tissue)~term, scales="free") +
+      geom_histogram(aes(fill= isotopeLabel), position="stack")
+
+# plot parameters as boxplots
+g <-
+  fits.ssasymp %>%
+    filter(fit!="failed to fit") %>%
+      filter(isotopeLabel != "C12 PARENT") %>%
+      unnest(tidied) %>%
+      ggplot(aes(y=estimate, x=interaction(Tissue, Method))) +
+        facet_grid(term~isotopeLabel, scales="free") +
+        geom_boxplot(aes(fill= isotopeLabel), position="dodge")
+ggsave(g, filename="summary fit paramaters.pdf", device="pdf", limitsize=T)
+
+
+# show the table of fit characteristics
+fits.ssasymp %>%
+  filter(fit!="failed to fit") %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+    filter(compound %in% amino.acids) %>%
+    unnest(tidied) %>% view()
+
+# plot only compounds within filtered fit characteristics
+fits.ssasymp %>%
+  filter(fit != "failed to fit") %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+    select(compound, Method, tidied) %>%
+      unnest(tidied) %>%
+        filter(term == "Asym") %>%
+          filter(estimate > 0.05 & estimate < 0.15) %>%
+            select(compound) %>%
+              left_join( . , fits.ssasymp) %>%
+                unnest(augmented) %>%
+                  ggplot(aes(x=Hours, color=Method)) +
+                    geom_point(aes(y=fraction.all)) +
+                    geom_line(aes(y=.fitted)) +
+                    facet_wrap(~compound)
+            
+# plot k estimate from all of the same fits
+fits.ssasymp %>%
+  filter(fit != "failed to fit") %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+    select(compound, Method, tidied) %>%
+      unnest(tidied) %>%
+        filter(term == "Asym") %>%
+          filter(estimate > 0.02 & estimate < 0.3) %>%
+            select(compound) %>%
+              left_join( . , fits.ssasymp) %>%
+                unnest(tidied) %>%
+                  filter(term == "lrc") %>%
+                  ggplot(aes(y=compound, x=exp(estimate), color=Method, shape=Tissue)) +
+                    geom_point() +
+                    # facet_grid(~Tissue) +
+                    #scale_x_continuous(sec.axis = dup_axis( ~ 0.6931 / .)) +
+                    ggtitle("fit k for each compound")
+# 
+# # plot boxplots of parameter estimates
+# fits.ssasymp %>%
+#   filter(fit != "failed to fit") %>%
+#     filter(isotopeLabel != "C12 PARENT") %>%
+#       # select(compound, Method, tidied) %>%
+#         unnest(tidied) %>%
+#           filter(term == "Asym") %>%
+#             filter(estimate > 0.02 & estimate < 0.3) %>%
+#               select(compound) %>%
+#                 left_join( . , fits.ssasymp) %>%
+#                   unnest(tidied) %>%
+#                     filter(term == "lrc") %>%
+#                     geom_boxplot(aes(y=Tissue, x=exp(estimate), color=Method)) +
+#                       # geom_point() +
+#                       #scale_x_continuous(sec.axis = dup_axis( ~ 0.6931 / .)) +
+#                       ggtitle("fit k for each compound")
+
+# plot all estimates from all the fits
+# plot k estimate from all of the same fits
+g<-
+  fits.ssasymp %>%
+    filter(fit != "failed to fit") %>%
+      unnest(tidied) %>%
+        ggplot(aes(y=compound, x=estimate, color=Method, shape=Tissue)) +
+          geom_point() +
+          facet_wrap(isotopeLabel~term, scales="free_x") +
+          ggtitle("fit paramater for each compound")
+
+ggsave(g, filename="all compounds fit paramaters.pdf", device="pdf", width=14, height=48, limitsize=T)
+      
+
+
+```
+
+
+
+
+
+
+# pot residuals of fits
+```{r}
+
+# histogram residuals of all compounds by isotopeLabel
+fits.ssasymp %>%
+  filter(fit != "failed to fit") %>%
+    unnest(augmented) %>%
+      ggplot(aes(x=.resid)) +
+        geom_histogram(bins=60) +
+        facet_wrap(~isotopeLabel) +
+        xlim(c(-0.1, 0.1))
+
+# histogram residuals of all compounds by Hours
+fits.ssasymp %>%
+  filter(fit != "failed to fit") %>%
+    unnest(augmented) %>%
+      ggplot(aes(x=.resid)) +
+        geom_histogram(bins=60) +
+        facet_wrap(~Hours) +
+        xlim(c(-0.1, 0.1))
+
+# 1d scatter over observations
+fits.ssasymp %>%
+  filter(fit != "failed to fit") %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+    unnest(augmented) %>%
+      ggplot(aes(y=.resid, x=compound, color=isotopeLabel, shape=Tissue, alpha=0.2)) +
+        geom_point() +
+        facet_wrap(~Hours)
+
+# scatter residual vs fitted value
+fits.ssasymp %>%
+  filter(fit != "failed to fit") %>%
+    filter(isotopeLabel != "C12 PARENT") %>%
+    unnest(augmented) %>%
+      ggplot(aes(y=.resid, x=.fitted, color=as.factor(Hours), shape=Tissue, alpha=0.2)) +
+        geom_point() +
+        facet_wrap(~isotopeLabel)
+
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

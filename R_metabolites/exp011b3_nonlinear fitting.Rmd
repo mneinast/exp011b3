@@ -1,0 +1,145 @@
+---
+title: "exp011b3_nonlinear fitting"
+output: html_notebook
+---
+
+uses data from 'exp011c_load and wrangle.Rmd'
+
+perform fits and save them to qs files (special format of rdata readable by qs package).
+
+# libraries
+
+```{r}
+library(tidyverse)
+library(broom)
+library(qs)
+
+```
+
+# directories
+```{r}
+
+# Set the directory path for free metabolite data
+input_free <- "./input/NA corrected/free/"
+
+# output
+output_directory <- "./output/natural abundance corrected/"
+
+```
+
+# import wrangled data
+
+```{r}
+
+labeled.data <- read_tsv(paste0(output_directory, "labeled data.tsv"))
+
+
+```
+
+# fit data to curves to estimate kinetics
+
+fit to nls starting from first timepoint (not zero) because primed injection would mess up kinetics
+
+in theory, general fit for all metabolites should indicate water kinetics?
+
+fitting code based on proteomics fitting code
+
+## define prep.nls
+
+```{r}
+
+# prep.nls definition
+
+# ASSUMES WORKING WITH SINGLE ISOTOPE
+
+
+prep.nls <- function(df){
+  df %>%
+    mutate(mod.hours = Hours-4) %>%
+      select(compound, Method, Hours, Tissue, Tracer, isotopeLabel, fraction.all) %>% # select relevant data
+        group_by(compound, Method, Tissue, Tracer, isotopeLabel) %>% # group to key data for model
+          nest()
+}
+
+# test prep.nls
+#labeled.data %>% filter(isotopeLabel == "C12 PARENT") %>%
+    # prep.nls() %>% head(5) %>% view() %>% .$data # optionally comment this in/out to preview data tables
+
+
+
+
+```
+
+## define fit functions
+
+```{r}
+
+
+# self starting assymptotic fit
+ssasympit <- function(df){
+  df %>%
+    mutate(fit = map(data,
+                     possibly(~nls(fraction.all~SSasymp(Hours, Asym, R0, lrc),
+                                   data= .)
+                              , otherwise="failed to fit", quiet=FALSE)),
+          tidied = map(fit, possibly(tidy, otherwise="failed to tidy")),
+          augmented = map(fit, possibly(augment, otherwise="failed to augment")),
+    )
+}
+
+
+```
+
+## run fits
+
+```{r message=FALSE, warning=FALSE}
+
+# fits.nls <-
+#   labeled.data %>%
+#     filter(isotopeLabel == "D2-label-1")
+#       prep.nls() %>%
+#         nlsit()
+      
+fits.ssasymp <-
+  labeled.data %>%
+    filter(Hours != 0) %>%
+      prep.nls() %>%
+        ssasympit()
+
+
+```
+
+# save
+
+summarize fit performance before saving external file
+
+```{r}
+fits.ssasymp %>%
+  filter(fit != "failed to fit") %>%
+    select(compound, Method, Tracer, Tissue, isotopeLabel) %>%
+      group_by(Method, Tracer, Tissue, isotopeLabel) %>%
+        summarise(n.fit.compounds = n())
+
+
+```
+
+save fits df to external file (r data file bc it has nested data)
+
+```{r}
+
+# save(fits.ssasymp, file="fits_ssasymp.rds")
+qsave(fits.ssasymp, paste0(output_directory, "fits_ssasymp.qs"))  # saving nested tables requires qs package
+getwd()
+
+# save a tsv of fit parameters for each compound
+fits.ssasymp %>%
+  filter(fit != "failed to fit") %>%
+    select(compound, Method, Tracer, Tissue, isotopeLabel, tidied) %>%
+      unnest(tidied) %>%
+        write_tsv( . ,file=paste0(output_directory,"fits_ssasymp_results.tsv"))
+
+```
+```{r}
+
+```
+
